@@ -1,4 +1,4 @@
-const { useEffect, useMemo, useState } = React;
+import React, { useEffect, useMemo, useState } from "react";
 
 /**
  * Jumble Project Garden v0.1 — single-file browser prototype
@@ -806,7 +806,7 @@ function AddAttachmentInline({ onAdd }) {
 }
 
 // ---------- main app ----------
-function App() {
+export default function App() {
   const [state, setState] = useState(() => loadState());
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -1157,5 +1157,3 @@ function App() {
     </div>
   );
 }
-
-window.App = App;
