@@ -165,6 +165,50 @@ function getNodeToolState(node) {
   return state.projectUi.toolState[node.id];
 }
 
+const imageSetTypes = ["collection", "choice best", "choice group"];
+
+function ensureImageSetState(node) {
+  if (!Array.isArray(node.image_set_images)) node.image_set_images = [];
+  if (!imageSetTypes.includes(node.image_set_type)) node.image_set_type = "collection";
+  node.image_set_images = node.image_set_images.map((item, index) => ({
+    id: item?.id || uid(),
+    name: item?.name || `Image ${index + 1}`,
+    file_path: item?.file_path || "",
+    image_url: item?.image_url || "",
+    rating: Math.max(0, Math.min(10, Number(item?.rating) || 0)),
+    notes: item?.notes || "",
+    state: item?.state === "excluded" ? "excluded" : item?.state === "included" ? "included" : "pending",
+  }));
+  if (typeof node.image_set_selected_index !== "number") node.image_set_selected_index = node.image_set_images.length ? 0 : -1;
+  node.image_set_selected_index = Math.max(-1, Math.min(node.image_set_selected_index, node.image_set_images.length - 1));
+  return node.image_set_images;
+}
+
+function imageSetDisplayUrl(image) {
+  if (!image) return "";
+  if (image.image_url) return image.image_url;
+  if (!image.file_path) return "";
+  return `/assets/${encodeURIComponent(state.currentProject.slug)}/${image.file_path}`;
+}
+
+function updateImageSetStatus(node) {
+  const images = ensureImageSetState(node);
+  if (!images.length) {
+    node.status = "new";
+    return;
+  }
+  if (node.image_set_type === "collection") {
+    node.status = "done";
+    return;
+  }
+  if (node.image_set_type === "choice best") {
+    node.status = node.image_set_primary_id ? "done" : "started";
+    return;
+  }
+  const allTagged = images.every((item) => item.state === "included" || item.state === "excluded");
+  node.status = allTagged ? "done" : "started";
+}
+
 function renderNodeTool(node) {
   if (!node) return "<div class=\"tool-empty\">Select a node to begin.</div>";
   const type = getNodeDisplayType(node);
@@ -198,6 +242,41 @@ function renderNodeTool(node) {
         <button class="btn btn-primary" id="image-tool-upload">Upload</button>
         <input id="image-tool-file" type="file" accept="image/*" class="hidden" />
       </div>
+    </div>`;
+  }
+  if (type === "image set") {
+    const images = ensureImageSetState(node);
+    const selectedIndex = node.image_set_selected_index;
+    const selectedImage = selectedIndex >= 0 ? images[selectedIndex] : null;
+    const imagePath = imageSetDisplayUrl(selectedImage);
+    const hasImage = !!imagePath;
+    const listHtml = images
+      .map((item, idx) => `<button class="image-set-item ${idx === selectedIndex ? "selected" : ""}" data-image-set-select="${idx}">${escapeHtml(item.name || `Image ${idx + 1}`)} <span class="image-set-state">${escapeHtml(item.state)}</span></button>`)
+      .join("");
+    const stars = Array.from({ length: 10 }, (_, i) => {
+      const value = i + 1;
+      const on = selectedImage && selectedImage.rating >= value;
+      return `<button class="image-set-star ${on ? "on" : ""}" data-image-set-rate="${value}" ${selectedImage ? "" : "disabled"}>★</button>`;
+    }).join("");
+    const modeButtons =
+      node.image_set_type === "choice best"
+        ? `<button class="btn btn-primary" id="image-set-best" ${selectedImage ? "" : "disabled"}>Choose As Best</button>`
+        : node.image_set_type === "choice group"
+        ? `<button class="btn btn-primary" id="image-set-include" ${selectedImage ? "" : "disabled"}>Include</button><button class="btn btn-muted" id="image-set-exclude" ${selectedImage ? "" : "disabled"}>Exclude</button>`
+        : "";
+    return `<div class="node-tool image-tool image-set-tool">
+      <div class="image-set-nav"><button class="btn btn-muted" id="image-set-prev" ${images.length ? "" : "disabled"}>Previous</button><button class="btn btn-muted" id="image-set-next" ${images.length ? "" : "disabled"}>Next</button></div>
+      <div class="image-preview-wrap">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Image set selection" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
+      <div class="image-set-meta">
+        <div class="image-set-rating-wrap"><div class="image-set-rating">${stars}</div>${modeButtons}</div>
+        <textarea id="image-set-notes" rows="3" placeholder="Notes for selected image" ${selectedImage ? "" : "disabled"}>${escapeHtml(selectedImage?.notes || "")}</textarea>
+      </div>
+      <div class="image-tool-actions">
+        <button class="btn btn-primary" id="image-set-upload">Upload</button>
+        <button class="btn btn-muted" id="image-set-remove" ${selectedImage ? "" : "disabled"}>Remove Selected</button>
+        <input id="image-set-file" type="file" accept="image/*" multiple class="hidden" />
+      </div>
+      <div class="image-set-list">${listHtml || '<div class="image-placeholder">No images uploaded</div>'}</div>
     </div>`;
   }
   return `<div class="node-tool unsupported-tool">Node Type ${escapeHtml(type || "unknown")} not yet supported</div>`;
@@ -290,6 +369,146 @@ function bindNodeToolEvents(node) {
       await persistProjectStructure();
       renderProjectPage();
     };
+  }
+  if (type === "image set") {
+    const images = ensureImageSetState(node);
+    const setSelection = (index) => {
+      node.image_set_selected_index = Math.max(-1, Math.min(index, images.length - 1));
+    };
+    const firstIncludedIndex = (step) => {
+      if (!images.length) return -1;
+      const start = node.image_set_selected_index >= 0 ? node.image_set_selected_index : 0;
+      for (let i = 1; i <= images.length; i += 1) {
+        const idx = (start + step * i + images.length) % images.length;
+        if (node.image_set_type !== "choice group" || images[idx].state !== "excluded") return idx;
+      }
+      return start;
+    };
+    const saveAndRender = async () => {
+      updateImageSetStatus(node);
+      await persistProjectStructure();
+      renderProjectPage();
+    };
+
+    const uploadBtn = document.getElementById("image-set-upload");
+    const removeBtn = document.getElementById("image-set-remove");
+    const input = document.getElementById("image-set-file");
+    const nextBtn = document.getElementById("image-set-next");
+    const prevBtn = document.getElementById("image-set-prev");
+    const notes = document.getElementById("image-set-notes");
+
+    for (const el of document.querySelectorAll("[data-image-set-select]")) {
+      el.onclick = () => {
+        setSelection(Number(el.dataset.imageSetSelect));
+        renderProjectPage();
+      };
+    }
+
+    if (prevBtn) prevBtn.onclick = () => {
+      setSelection(firstIncludedIndex(-1));
+      renderProjectPage();
+    };
+    if (nextBtn) nextBtn.onclick = () => {
+      setSelection(firstIncludedIndex(1));
+      renderProjectPage();
+    };
+
+    if (uploadBtn && input) {
+      uploadBtn.onclick = () => input.click();
+      input.onchange = async () => {
+        const files = Array.from(input.files || []);
+        if (!files.length) return;
+        for (const file of files) {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error("Failed to read file"));
+            reader.readAsDataURL(file);
+          });
+          const imageId = uid();
+          const res = await fetch("/api/project-node-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ slug: state.currentProject.slug, node_id: `${node.id}-${imageId}`, filename: file.name, data_url: dataUrl }),
+          });
+          if (!res.ok) continue;
+          const payload = await res.json();
+          images.push({ id: imageId, name: file.name, file_path: payload.file_path, image_url: payload.asset_url || "", rating: 0, notes: "", state: "pending" });
+        }
+        if (node.image_set_selected_index < 0 && images.length) node.image_set_selected_index = 0;
+        input.value = "";
+        await saveAndRender();
+      };
+    }
+
+    if (removeBtn) removeBtn.onclick = async () => {
+      if (node.image_set_selected_index < 0) return;
+      images.splice(node.image_set_selected_index, 1);
+      if (!images.length) node.image_set_selected_index = -1;
+      else node.image_set_selected_index = Math.min(node.image_set_selected_index, images.length - 1);
+      await saveAndRender();
+    };
+
+    for (const star of document.querySelectorAll("[data-image-set-rate]")) {
+      star.onclick = async () => {
+        const selected = images[node.image_set_selected_index];
+        if (!selected) return;
+        selected.rating = Number(star.dataset.imageSetRate) || 0;
+        await saveAndRender();
+      };
+    }
+
+    if (notes) {
+      const commit = async () => {
+        const selected = images[node.image_set_selected_index];
+        if (!selected) return;
+        if (selected.notes === notes.value) return;
+        selected.notes = notes.value;
+        await saveAndRender();
+      };
+      notes.onblur = commit;
+      notes.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          await commit();
+        }
+      };
+    }
+
+    const bestBtn = document.getElementById("image-set-best");
+    if (bestBtn) bestBtn.onclick = async () => {
+      const selected = images[node.image_set_selected_index];
+      if (!selected) return;
+      node.image_set_primary_id = selected.id;
+      const bestIndex = images.findIndex((item) => item.id === node.image_set_primary_id);
+      if (bestIndex > 0) {
+        const [best] = images.splice(bestIndex, 1);
+        images.unshift(best);
+      }
+      node.image_set_selected_index = 0;
+      await saveAndRender();
+    };
+
+    const includeBtn = document.getElementById("image-set-include");
+    const excludeBtn = document.getElementById("image-set-exclude");
+    if (includeBtn) includeBtn.onclick = async () => {
+      const selected = images[node.image_set_selected_index];
+      if (!selected) return;
+      selected.state = "included";
+      await saveAndRender();
+    };
+    if (excludeBtn) excludeBtn.onclick = async () => {
+      const idx = node.image_set_selected_index;
+      const selected = images[idx];
+      if (!selected) return;
+      selected.state = "excluded";
+      const [moved] = images.splice(idx, 1);
+      images.push(moved);
+      node.image_set_selected_index = firstIncludedIndex(1);
+      await saveAndRender();
+    };
+
+    return;
   }
 }
 
@@ -467,8 +686,11 @@ function renderProjectPage() {
           <label class="field">Name <input id="node-name" value="${escapeHtml(selectedNode.name || "")}" ${selectedNode.immutable_name ? "disabled" : ""} /></label>
           <label class="field">Description <textarea id="node-description" rows="2">${escapeHtml(selectedNode.description || "")}</textarea></label>
           <label class="field">Node Type <select id="node-type"><option value="component" ${selectedNode.node_type === "component" ? "selected" : ""}>component</option><option value="choice" ${selectedNode.node_type === "choice" ? "selected" : ""}>choice</option><option value="tool" ${selectedNode.node_type === "tool" ? "selected" : ""}>tool</option></select></label>
-          <label class="field ${selectedNode.node_type === "component" ? "" : "hidden"}">Component Type <select id="component-type"><option value="image" ${selectedNode.component_type === "image" ? "selected" : ""}>image</option><option value="video" ${selectedNode.component_type === "video" ? "selected" : ""}>video</option><option value="text" ${selectedNode.component_type === "text" ? "selected" : ""}>text</option><option value="link" ${selectedNode.component_type === "link" ? "selected" : ""}>link</option><option value="file" ${selectedNode.component_type === "file" ? "selected" : ""}>file</option></select></label>
+          <label class="field ${selectedNode.node_type === "component" ? "" : "hidden"}">Component Type <select id="component-type"><option value="image" ${selectedNode.component_type === "image" ? "selected" : ""}>image</option><option value="video" ${selectedNode.component_type === "video" ? "selected" : ""}>video</option><option value="text" ${selectedNode.component_type === "text" ? "selected" : ""}>text</option><option value="link" ${selectedNode.component_type === "link" ? "selected" : ""}>link</option><option value="file" ${selectedNode.component_type === "file" ? "selected" : ""}>file</option><option value="image set" ${selectedNode.component_type === "image set" ? "selected" : ""}>image set</option></select></label>
           <label class="field ${selectedNode.node_type === "choice" ? "" : "hidden"}"><input type="checkbox" id="choice-between" ${selectedNode.choice_between_components ? "checked" : ""} /> between components</label>
+          <label class="field ${selectedNode.node_type === "component" && selectedNode.component_type === "image set" ? "" : "hidden"}">Image Set Type <select id="image-set-type">${imageSetTypes
+            .map((value) => `<option value="${value}" ${selectedNode.image_set_type === value ? "selected" : ""}>${value}</option>`)
+            .join("")}</select></label>
         </div>` : ""}
       </div>
     </section>
@@ -517,7 +739,7 @@ function renderProjectPage() {
   document.getElementById("add-node").onclick = async () => {
     if (!selectedNode || selectedNode.lock_subnodes) return;
     selectedNode.children = selectedNode.children || [];
-    const newNode = { id: uid(), parent_id: selectedNode.id, name: "", description: "", node_type: "component", component_type: "text", choice_between_components: false, status: "new", lock_subnodes: false, notes: "", discussion: [], children: [] };
+    const newNode = { id: uid(), parent_id: selectedNode.id, name: "", description: "", node_type: "component", component_type: "text", choice_between_components: false, status: "new", lock_subnodes: false, notes: "", discussion: [], children: [], image_set_type: "collection", image_set_images: [], image_set_primary_id: "", image_set_selected_index: -1 };
     selectedNode.children.push(newNode);
     state.projectUi.selectedNodeId = newNode.id;
     state.projectUi.editorOpen = true;
@@ -606,6 +828,16 @@ function renderProjectPage() {
     const componentType = document.getElementById("component-type");
     if (componentType) componentType.onchange = async (e) => {
       selectedNode.component_type = e.target.value;
+      if (selectedNode.component_type === "image set") {
+        ensureImageSetState(selectedNode);
+        updateImageSetStatus(selectedNode);
+      }
+      await applyAndSave();
+    };
+    const imageSetType = document.getElementById("image-set-type");
+    if (imageSetType) imageSetType.onchange = async (e) => {
+      selectedNode.image_set_type = e.target.value;
+      updateImageSetStatus(selectedNode);
       await applyAndSave();
     };
     const choiceBetween = document.getElementById("choice-between");
