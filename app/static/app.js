@@ -393,6 +393,17 @@ function renderDiscovery() {
 }
 
 function renderProjectPage() {
+  const activeEl = document.activeElement;
+  const focusSnapshot =
+    activeEl && activeEl.id === "text-tool-content"
+      ? {
+          id: activeEl.id,
+          start: activeEl.selectionStart,
+          end: activeEl.selectionEnd,
+          scrollTop: activeEl.scrollTop,
+        }
+      : null;
+
   ensureProjectUiState();
   ensureStructureLoaded();
   const structure = state.projectStructures[state.currentProject.slug];
@@ -605,6 +616,19 @@ function renderProjectPage() {
   }
 
   bindNodeToolEvents(selectedNode);
+
+  if (focusSnapshot?.id === "text-tool-content") {
+    const refreshedArea = document.getElementById("text-tool-content");
+    if (refreshedArea && !refreshedArea.disabled) {
+      refreshedArea.focus();
+      if (typeof focusSnapshot.start === "number" && typeof focusSnapshot.end === "number") {
+        refreshedArea.setSelectionRange(focusSnapshot.start, focusSnapshot.end);
+      }
+      if (typeof focusSnapshot.scrollTop === "number") {
+        refreshedArea.scrollTop = focusSnapshot.scrollTop;
+      }
+    }
+  }
 }
 
 function renderDetailsPage() {
