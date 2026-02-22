@@ -1,0 +1,124 @@
+:root {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+  color: #1f2937;
+  background: #f8fafc;
+}
+
+body {
+  margin: 0;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.top-bar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.title-wrap {
+  text-align: center;
+}
+
+h1 { margin: 0; }
+.subtitle { margin: 4px 0 0; color: #475569; }
+
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.btn-primary { background: #2563eb; color: white; }
+.btn-muted { background: #e2e8f0; }
+
+.tools {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr repeat(3, auto);
+  gap: 10px;
+  align-items: center;
+}
+
+input, textarea, select {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 9px;
+  font: inherit;
+}
+
+.projects.grid {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.projects.list {
+  margin-top: 20px;
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.card-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 12px;
+}
+
+.thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #e2e8f0;
+}
+
+.card-content { padding: 10px 12px 14px; }
+.card-title { margin: 0 0 6px; font-size: 1.05rem; }
+.card-desc { margin: 0; color: #475569; }
+
+.badges { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.badge { background: #e2e8f0; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
+
+.panel {
+  max-width: 800px;
+  margin: 24px auto;
+  background: white;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 14px;
+}
+
+.wide { grid-column: 1 / -1; }
+
+.field { display: grid; gap: 6px; }
+.help { color: #64748b; font-size: 12px; }
+.error { color: #b91c1c; margin-bottom: 8px; }
+.actions { margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px; }
+
+.empty {
+  margin-top: 22px;
+  text-align: center;
+  color: #64748b;
+}
