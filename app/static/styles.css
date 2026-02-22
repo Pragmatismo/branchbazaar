@@ -203,14 +203,14 @@ input, textarea, select {
   cursor: col-resize;
   background: transparent;
 }
-.project-main { padding: 16px; display: grid; gap: 12px; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 100vh; }
+.project-main { padding: 16px; display: grid; gap: 12px; align-content: start; }
 .project-main-top { display: flex; justify-content: space-between; }
 .active-panel, .editor-panel { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); padding: 14px; }
-.active-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.active-panel { display: grid; gap: 12px; }
 .active-header h3 { margin: 0 0 4px; }
 .active-header p { margin: 0; color: #475569; }
-.active-tool-body { min-height: 0; margin-top: 12px; }
-.node-tool { height: 100%; min-height: 0; }
+.active-tool-body { min-height: 280px; }
+.node-tool { min-height: 280px; }
 .text-tool { display: grid; grid-template-rows: 1fr auto; gap: 10px; }
 .text-tool-content { width: 100%; min-height: 280px; resize: vertical; }
 .text-tool-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -226,4 +226,3 @@ input, textarea, select {
 .editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 .hidden { display: none; }
-
