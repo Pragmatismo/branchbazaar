@@ -209,6 +209,68 @@ function updateImageSetStatus(node) {
   node.status = allTagged ? "done" : "started";
 }
 
+function buildImageSetChildNode(parentNode, name, images) {
+  return {
+    id: uid(),
+    parent_id: parentNode.id,
+    name,
+    description: "",
+    node_type: "component",
+    component_type: "image set",
+    choice_between_components: false,
+    status: "done",
+    lock_subnodes: true,
+    notes: "",
+    discussion: [],
+    children: [],
+    image_set_type: "collection",
+    image_set_images: structuredClone(images),
+    image_set_primary_id: "",
+    image_set_selected_index: images.length ? 0 : -1,
+  };
+}
+
+function ensureUnusedImagesChildNode(node, images) {
+  if (!images.length) return;
+  node.children = node.children || [];
+  const existing = node.children.find((child) => child.name === "unused images" && child.component_type === "image set");
+  if (existing) {
+    ensureImageSetState(existing);
+    existing.image_set_type = "collection";
+    existing.image_set_images = structuredClone(images);
+    existing.image_set_selected_index = images.length ? 0 : -1;
+    existing.status = "done";
+    existing.lock_subnodes = true;
+    return;
+  }
+  node.children.push(buildImageSetChildNode(node, "unused images", images));
+}
+
+function finalizeChoiceBestNode(node) {
+  const images = ensureImageSetState(node);
+  const selected = images.find((item) => item.id === node.image_set_primary_id);
+  if (!selected) return;
+  const unused = images.filter((item) => item.id !== selected.id);
+  ensureUnusedImagesChildNode(node, unused);
+  node.component_type = "image";
+  node.file_path = selected.file_path || "";
+  node.image_url = selected.image_url || "";
+  node.status = "done";
+  node.lock_subnodes = true;
+}
+
+function finalizeChoiceGroupNode(node) {
+  const images = ensureImageSetState(node);
+  const included = images.filter((item) => item.state === "included");
+  const excluded = images.filter((item) => item.state === "excluded");
+  ensureUnusedImagesChildNode(node, excluded);
+  node.image_set_type = "collection";
+  node.image_set_images = included;
+  node.image_set_selected_index = included.length ? 0 : -1;
+  node.status = "done";
+  node.lock_subnodes = true;
+}
+
 function renderNodeTool(node) {
   if (!node) return "<div class=\"tool-empty\">Select a node to begin.</div>";
   const type = getNodeDisplayType(node);
@@ -246,37 +308,57 @@ function renderNodeTool(node) {
   }
   if (type === "image set") {
     const images = ensureImageSetState(node);
-    const selectedIndex = node.image_set_selected_index;
-    const selectedImage = selectedIndex >= 0 ? images[selectedIndex] : null;
-    const imagePath = imageSetDisplayUrl(selectedImage);
+    const toolState = getNodeToolState(node);
+    if (typeof toolState.showIncluded !== "boolean") toolState.showIncluded = false;
+    if (typeof toolState.showExcluded !== "boolean") toolState.showExcluded = false;
+    const visibleStates = [];
+    if (toolState.showIncluded) visibleStates.push("included");
+    if (toolState.showExcluded) visibleStates.push("excluded");
+    const visibleImages =
+      node.image_set_type === "choice group"
+        ? images.filter((item) => item.state === "pending" || visibleStates.includes(item.state))
+        : images;
+    const selectedImage =
+      node.image_set_selected_index >= 0 && node.image_set_selected_index < images.length ? images[node.image_set_selected_index] : null;
+    const selectedVisible = !!selectedImage && visibleImages.includes(selectedImage);
+    const displayImage = selectedVisible ? selectedImage : visibleImages[0] || null;
+    const imagePath = imageSetDisplayUrl(displayImage);
     const hasImage = !!imagePath;
-    const listHtml = images
-      .map((item, idx) => `<button class="image-set-item ${idx === selectedIndex ? "selected" : ""}" data-image-set-select="${idx}">${escapeHtml(item.name || `Image ${idx + 1}`)} <span class="image-set-state">${escapeHtml(item.state)}</span></button>`)
+    const listHtml = visibleImages
+      .map((item, idx) => {
+        const sourceIndex = images.findIndex((candidate) => candidate.id === item.id);
+        return `<button class="image-set-item ${sourceIndex === node.image_set_selected_index ? "selected" : ""}" data-image-set-select="${sourceIndex}">${escapeHtml(item.name || `Image ${idx + 1}`)} <span class="image-set-state">${escapeHtml(item.state)}</span></button>`;
+      })
       .join("");
     const stars = Array.from({ length: 10 }, (_, i) => {
       const value = i + 1;
-      const on = selectedImage && selectedImage.rating >= value;
-      return `<button class="image-set-star ${on ? "on" : ""}" data-image-set-rate="${value}" ${selectedImage ? "" : "disabled"}>★</button>`;
+      const on = displayImage && displayImage.rating >= value;
+      return `<button class="image-set-star ${on ? "on" : ""}" data-image-set-rate="${value}" ${displayImage ? "" : "disabled"}>★</button>`;
     }).join("");
+    const showControls =
+      node.image_set_type === "choice group"
+        ? `<span class="image-set-show-label">Show</span><label class="image-set-filter"><input type="checkbox" id="image-set-show-included" ${toolState.showIncluded ? "checked" : ""}/>included</label><label class="image-set-filter"><input type="checkbox" id="image-set-show-excluded" ${toolState.showExcluded ? "checked" : ""}/>excluded</label>`
+        : "";
     const modeButtons =
       node.image_set_type === "choice best"
-        ? `<button class="btn btn-primary" id="image-set-best" ${selectedImage ? "" : "disabled"}>Choose As Best</button>`
+        ? `<button class="btn btn-primary" id="image-set-best" ${displayImage ? "" : "disabled"}>Choose As Best</button>`
         : node.image_set_type === "choice group"
-        ? `<button class="btn btn-primary" id="image-set-include" ${selectedImage ? "" : "disabled"}>Include</button><button class="btn btn-muted" id="image-set-exclude" ${selectedImage ? "" : "disabled"}>Exclude</button>`
+        ? `<button class="btn btn-primary" id="image-set-include" ${displayImage ? "" : "disabled"}>Include Image</button><button class="btn btn-muted" id="image-set-exclude" ${displayImage ? "" : "disabled"}>Exclude Image</button>`
         : "";
+    const previewStateClass = displayImage?.state === "included" ? "image-preview-wrap state-included" : displayImage?.state === "excluded" ? "image-preview-wrap state-excluded" : "image-preview-wrap";
     return `<div class="node-tool image-tool image-set-tool">
-      <div class="image-set-nav"><button class="btn btn-muted" id="image-set-prev" ${images.length ? "" : "disabled"}>Previous</button><button class="btn btn-muted" id="image-set-next" ${images.length ? "" : "disabled"}>Next</button></div>
-      <div class="image-preview-wrap">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Image set selection" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
+      <div class="image-set-nav"><button class="btn btn-muted" id="image-set-prev" ${visibleImages.length ? "" : "disabled"}>Previous</button><button class="btn btn-muted" id="image-set-next" ${visibleImages.length ? "" : "disabled"}>Next</button>${showControls}</div>
+      <div class="${previewStateClass}">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Image set selection" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
       <div class="image-set-meta">
         <div class="image-set-rating-wrap"><div class="image-set-rating">${stars}</div>${modeButtons}</div>
-        <textarea id="image-set-notes" rows="3" placeholder="Notes for selected image" ${selectedImage ? "" : "disabled"}>${escapeHtml(selectedImage?.notes || "")}</textarea>
+        <textarea id="image-set-notes" rows="3" placeholder="Notes for selected image" ${displayImage ? "" : "disabled"}>${escapeHtml(displayImage?.notes || "")}</textarea>
       </div>
       <div class="image-tool-actions">
         <button class="btn btn-primary" id="image-set-upload">Upload</button>
-        <button class="btn btn-muted" id="image-set-remove" ${selectedImage ? "" : "disabled"}>Remove Selected</button>
+        <button class="btn btn-muted" id="image-set-remove" ${displayImage ? "" : "disabled"}>Remove Selected</button>
         <input id="image-set-file" type="file" accept="image/*" multiple class="hidden" />
       </div>
-      <div class="image-set-list">${listHtml || '<div class="image-placeholder">No images uploaded</div>'}</div>
+      <div class="image-set-list">${listHtml || '<div class="image-placeholder">No images to show</div>'}</div>
     </div>`;
   }
   return `<div class="node-tool unsupported-tool">Node Type ${escapeHtml(type || "unknown")} not yet supported</div>`;
@@ -372,23 +454,48 @@ function bindNodeToolEvents(node) {
   }
   if (type === "image set") {
     const images = ensureImageSetState(node);
+    const toolState = getNodeToolState(node);
+    if (typeof toolState.showIncluded !== "boolean") toolState.showIncluded = false;
+    if (typeof toolState.showExcluded !== "boolean") toolState.showExcluded = false;
+    const visibleImages = () =>
+      node.image_set_type === "choice group"
+        ? images.filter(
+            (item) =>
+              item.state === "pending" ||
+              (item.state === "included" && toolState.showIncluded) ||
+              (item.state === "excluded" && toolState.showExcluded)
+          )
+        : images;
     const setSelection = (index) => {
       node.image_set_selected_index = Math.max(-1, Math.min(index, images.length - 1));
     };
-    const firstIncludedIndex = (step) => {
-      if (!images.length) return -1;
-      const start = node.image_set_selected_index >= 0 ? node.image_set_selected_index : 0;
-      for (let i = 1; i <= images.length; i += 1) {
-        const idx = (start + step * i + images.length) % images.length;
-        if (node.image_set_type !== "choice group" || images[idx].state !== "excluded") return idx;
+    const moveToNextVisible = (step = 1) => {
+      const shown = visibleImages();
+      if (!shown.length) {
+        node.image_set_selected_index = -1;
+        return;
       }
-      return start;
+      const currentId = images[node.image_set_selected_index]?.id;
+      const currentShownIndex = shown.findIndex((item) => item.id === currentId);
+      const base = currentShownIndex >= 0 ? currentShownIndex : -1;
+      const nextIdx = (base + step + shown.length) % shown.length;
+      const next = shown[nextIdx];
+      setSelection(images.findIndex((item) => item.id === next.id));
+    };
+    const maybeFinalizeChoiceGroup = () => {
+      if (node.image_set_type !== "choice group") return;
+      const allTagged = images.length > 0 && images.every((item) => item.state === "included" || item.state === "excluded");
+      if (!allTagged) return;
+      finalizeChoiceGroupNode(node);
     };
     const saveAndRender = async () => {
-      updateImageSetStatus(node);
+      maybeFinalizeChoiceGroup();
+      if (node.component_type === "image set") updateImageSetStatus(node);
       await persistProjectStructure();
       renderProjectPage();
     };
+    const selectedImage =
+      node.image_set_selected_index >= 0 && node.image_set_selected_index < images.length ? images[node.image_set_selected_index] : null;
 
     const uploadBtn = document.getElementById("image-set-upload");
     const removeBtn = document.getElementById("image-set-remove");
@@ -396,6 +503,8 @@ function bindNodeToolEvents(node) {
     const nextBtn = document.getElementById("image-set-next");
     const prevBtn = document.getElementById("image-set-prev");
     const notes = document.getElementById("image-set-notes");
+    const showIncluded = document.getElementById("image-set-show-included");
+    const showExcluded = document.getElementById("image-set-show-excluded");
 
     for (const el of document.querySelectorAll("[data-image-set-select]")) {
       el.onclick = () => {
@@ -405,11 +514,26 @@ function bindNodeToolEvents(node) {
     }
 
     if (prevBtn) prevBtn.onclick = () => {
-      setSelection(firstIncludedIndex(-1));
+      moveToNextVisible(-1);
       renderProjectPage();
     };
     if (nextBtn) nextBtn.onclick = () => {
-      setSelection(firstIncludedIndex(1));
+      moveToNextVisible(1);
+      renderProjectPage();
+    };
+
+    if (showIncluded) showIncluded.onchange = () => {
+      toolState.showIncluded = showIncluded.checked;
+      if (node.image_set_type === "choice group" && !visibleImages().some((item) => item.id === images[node.image_set_selected_index]?.id)) {
+        moveToNextVisible(1);
+      }
+      renderProjectPage();
+    };
+    if (showExcluded) showExcluded.onchange = () => {
+      toolState.showExcluded = showExcluded.checked;
+      if (node.image_set_type === "choice group" && !visibleImages().some((item) => item.id === images[node.image_set_selected_index]?.id)) {
+        moveToNextVisible(1);
+      }
       renderProjectPage();
     };
 
@@ -445,7 +569,7 @@ function bindNodeToolEvents(node) {
       if (node.image_set_selected_index < 0) return;
       images.splice(node.image_set_selected_index, 1);
       if (!images.length) node.image_set_selected_index = -1;
-      else node.image_set_selected_index = Math.min(node.image_set_selected_index, images.length - 1);
+      else moveToNextVisible(1);
       await saveAndRender();
     };
 
@@ -477,16 +601,12 @@ function bindNodeToolEvents(node) {
 
     const bestBtn = document.getElementById("image-set-best");
     if (bestBtn) bestBtn.onclick = async () => {
-      const selected = images[node.image_set_selected_index];
+      const selected = selectedImage;
       if (!selected) return;
       node.image_set_primary_id = selected.id;
-      const bestIndex = images.findIndex((item) => item.id === node.image_set_primary_id);
-      if (bestIndex > 0) {
-        const [best] = images.splice(bestIndex, 1);
-        images.unshift(best);
-      }
-      node.image_set_selected_index = 0;
-      await saveAndRender();
+      finalizeChoiceBestNode(node);
+      await persistProjectStructure();
+      renderProjectPage();
     };
 
     const includeBtn = document.getElementById("image-set-include");
@@ -494,17 +614,15 @@ function bindNodeToolEvents(node) {
     if (includeBtn) includeBtn.onclick = async () => {
       const selected = images[node.image_set_selected_index];
       if (!selected) return;
-      selected.state = "included";
+      selected.state = selected.state === "included" ? "pending" : "included";
+      if (node.image_set_type === "choice group") moveToNextVisible(1);
       await saveAndRender();
     };
     if (excludeBtn) excludeBtn.onclick = async () => {
-      const idx = node.image_set_selected_index;
-      const selected = images[idx];
+      const selected = images[node.image_set_selected_index];
       if (!selected) return;
-      selected.state = "excluded";
-      const [moved] = images.splice(idx, 1);
-      images.push(moved);
-      node.image_set_selected_index = firstIncludedIndex(1);
+      selected.state = selected.state === "excluded" ? "pending" : "excluded";
+      if (node.image_set_type === "choice group") moveToNextVisible(1);
       await saveAndRender();
     };
 
