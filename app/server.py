@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import re
 import uuid
 from dataclasses import asdict, dataclass
@@ -67,6 +69,10 @@ def project_nodes_index_path(slug: str) -> Path:
 
 def top_level_node_path(slug: str, node_id: str) -> Path:
     return PROJECTS_DIR / slug / f"node_{node_id}.json"
+
+
+def node_files_dir(slug: str) -> Path:
+    return PROJECTS_DIR / slug / "files"
 
 
 def read_project(json_path: Path) -> Project | None:
@@ -335,6 +341,38 @@ def save_project_structure(slug: str, nodes: list[dict[str, Any]]) -> None:
     )
 
 
+def parse_data_url(payload: str) -> tuple[bytes, str] | None:
+    if not payload.startswith("data:") or ";base64," not in payload:
+        return None
+    head, encoded = payload.split(",", 1)
+    mime = head[5:].split(";", 1)[0] or "application/octet-stream"
+    try:
+        return base64.b64decode(encoded), mime
+    except ValueError:
+        return None
+
+
+def image_extension_from_name(filename: str, mime: str) -> str:
+    candidate = Path(filename or "").suffix.lower()
+    if candidate in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}:
+        return candidate
+    guessed = mimetypes.guess_extension(mime) or ".bin"
+    return ".jpg" if guessed == ".jpe" else guessed
+
+
+def save_node_image(slug: str, node_id: str, filename: str, data_url: str) -> str | None:
+    parsed = parse_data_url(data_url)
+    if not parsed:
+        return None
+    payload, mime = parsed
+    ext = image_extension_from_name(filename, mime)
+    files_dir = node_files_dir(slug)
+    files_dir.mkdir(parents=True, exist_ok=True)
+    target_name = f"{node_id}{ext}"
+    (files_dir / target_name).write_bytes(payload)
+    return f"files/{target_name}"
+
+
 class BranchBazaarHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -378,7 +416,7 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
                 asset_path = PROJECTS_DIR / slug / filename
                 if asset_path.exists() and asset_path.is_file():
                     content = asset_path.read_bytes()
-                    content_type = "image/svg+xml" if filename.endswith(".svg") else "application/octet-stream"
+                    content_type = mimetypes.guess_type(filename)[0] or ("image/svg+xml" if filename.endswith(".svg") else "application/octet-stream")
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", content_type)
                     self.send_header("Content-Length", str(len(content)))
@@ -401,6 +439,24 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": error})
                 return
             self._json(HTTPStatus.CREATED, {"project": project})
+            return
+        if parsed.path == "/api/project-node-image":
+            payload = self._read_json_body()
+            if payload is None:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
+                return
+            slug = str(payload.get("slug", "")).strip()
+            node_id = str(payload.get("node_id", "")).strip()
+            filename = str(payload.get("filename", "upload"))
+            data_url = str(payload.get("data_url", ""))
+            if not slug or not node_id or not data_url:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "slug, node_id and data_url are required"})
+                return
+            file_path = save_node_image(slug, node_id, filename, data_url)
+            if not file_path:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid image payload"})
+                return
+            self._json(HTTPStatus.CREATED, {"file_path": file_path})
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
 

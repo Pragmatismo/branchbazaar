@@ -134,6 +134,152 @@ function nextDuplicateName(name, siblingNames) {
   return `${base} #${n}`;
 }
 
+function getNodeDisplayType(node) {
+  if (!node) return "";
+  if (node.node_type === "component") return node.component_type || "text";
+  return node.node_type || "";
+}
+
+function ensureTextHistory(node) {
+  if (!Array.isArray(node.content_history)) {
+    const fallbackText = typeof node.content === "string" ? node.content : "";
+    node.content_history = [{ edited_at: new Date().toISOString(), text: fallbackText }];
+  }
+  if (!node.content_history.length) {
+    node.content_history.push({ edited_at: new Date().toISOString(), text: "" });
+  }
+  return node.content_history;
+}
+
+function formatEditedDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString();
+}
+
+function getNodeToolState(node) {
+  ensureProjectUiState();
+  if (!state.projectUi.toolState) state.projectUi.toolState = {};
+  if (!state.projectUi.toolState[node.id]) state.projectUi.toolState[node.id] = {};
+  return state.projectUi.toolState[node.id];
+}
+
+function renderNodeTool(node) {
+  if (!node) return "<div class=\"tool-empty\">Select a node to begin.</div>";
+  const type = getNodeDisplayType(node);
+  if (type === "text") {
+    const history = ensureTextHistory(node);
+    const toolState = getNodeToolState(node);
+    if (typeof toolState.historyIndex !== "number") toolState.historyIndex = history.length - 1;
+    toolState.historyIndex = Math.max(0, Math.min(toolState.historyIndex, history.length - 1));
+    const atLatest = toolState.historyIndex === history.length - 1;
+    if (typeof toolState.draft !== "string") toolState.draft = history[history.length - 1].text || "";
+    const viewText = atLatest ? toolState.draft : history[toolState.historyIndex].text || "";
+    const latest = history[history.length - 1];
+    const changed = toolState.draft !== (latest.text || "");
+    return `<div class="node-tool text-tool">
+      <textarea id="text-tool-content" class="text-tool-content" ${atLatest ? "" : "disabled"}>${escapeHtml(viewText)}</textarea>
+      <div class="text-tool-actions">
+        <button class="btn btn-primary" id="text-tool-save" ${changed && atLatest ? "" : "disabled"}>Save</button>
+        <button class="btn btn-muted" id="text-tool-revert" ${changed && atLatest ? "" : "disabled"}>Revert</button>
+        <button class="btn btn-muted" id="text-tool-prev" ${toolState.historyIndex > 0 ? "" : "disabled"}>Show Previous</button>
+        <button class="btn btn-muted" id="text-tool-next" ${atLatest ? "disabled" : ""}>Show Next</button>
+        <span class="last-edited">Last edited: ${escapeHtml(formatEditedDate(latest.edited_at))}</span>
+      </div>
+    </div>`;
+  }
+  if (type === "image") {
+    const hasImage = !!node.file_path;
+    return `<div class="node-tool image-tool">
+      <div class="image-preview-wrap">${hasImage ? `<img class="image-preview" src="/assets/${encodeURIComponent(state.currentProject.slug)}/${node.file_path}" alt="Node image" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
+      <div class="image-tool-actions">
+        <button class="btn btn-primary" id="image-tool-upload">Upload</button>
+        <input id="image-tool-file" type="file" accept="image/*" class="hidden" />
+      </div>
+    </div>`;
+  }
+  return `<div class="node-tool unsupported-tool">Node Type ${escapeHtml(type || "unknown")} not yet supported</div>`;
+}
+
+function bindNodeToolEvents(node) {
+  if (!node) return;
+  const type = getNodeDisplayType(node);
+  if (type === "text") {
+    const toolState = getNodeToolState(node);
+    const area = document.getElementById("text-tool-content");
+    if (area) {
+      area.oninput = () => {
+        toolState.draft = area.value;
+        renderProjectPage();
+      };
+    }
+    const saveBtn = document.getElementById("text-tool-save");
+    if (saveBtn) saveBtn.onclick = async () => {
+      const history = ensureTextHistory(node);
+      const latest = history[history.length - 1];
+      if (toolState.draft === (latest.text || "")) return;
+      history.push({ edited_at: new Date().toISOString(), text: toolState.draft || "" });
+      toolState.historyIndex = history.length - 1;
+      await persistProjectStructure();
+      renderProjectPage();
+    };
+    const revertBtn = document.getElementById("text-tool-revert");
+    if (revertBtn) revertBtn.onclick = () => {
+      if (!window.confirm("Discard unsaved changes and revert to the latest saved version?")) return;
+      const history = ensureTextHistory(node);
+      toolState.historyIndex = history.length - 1;
+      toolState.draft = history[history.length - 1].text || "";
+      renderProjectPage();
+    };
+    const prevBtn = document.getElementById("text-tool-prev");
+    if (prevBtn) prevBtn.onclick = () => {
+      const history = ensureTextHistory(node);
+      toolState.historyIndex = Math.max(0, (toolState.historyIndex ?? history.length - 1) - 1);
+      renderProjectPage();
+    };
+    const nextBtn = document.getElementById("text-tool-next");
+    if (nextBtn) nextBtn.onclick = () => {
+      const history = ensureTextHistory(node);
+      toolState.historyIndex = Math.min(history.length - 1, (toolState.historyIndex ?? history.length - 1) + 1);
+      if (toolState.historyIndex === history.length - 1) toolState.draft = history[history.length - 1].text || "";
+      renderProjectPage();
+    };
+    return;
+  }
+  if (type === "image") {
+    const uploadBtn = document.getElementById("image-tool-upload");
+    const input = document.getElementById("image-tool-file");
+    if (!uploadBtn || !input) return;
+    uploadBtn.onclick = () => input.click();
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/project-node-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: state.currentProject.slug, node_id: node.id, filename: file.name, data_url: dataUrl }),
+      });
+      if (!res.ok) {
+        alert("Unable to upload image.");
+        return;
+      }
+      const payload = await res.json();
+      node.file_path = payload.file_path;
+      node.status = "done";
+      node.lock_subnodes = true;
+      await persistProjectStructure();
+      renderProjectPage();
+    };
+  }
+}
+
 function renderDiscovery() {
   const items = filteredProjects();
   const cards = items
@@ -254,7 +400,7 @@ function renderProjectPage() {
   const selected = rows.find((row) => row.node.id === state.projectUi.selectedNodeId) || rows[0] || null;
   const selectedNode = selected?.node || null;
   const selectedPath = selected ? selected.path.join(" : ") : "";
-  const selectedType = selectedNode?.node_type === "component" ? (selectedNode.component_type || "text") : selectedNode?.node_type || "component";
+  const selectedType = getNodeDisplayType(selectedNode) || "component";
 
   const treeHtml = rows
     .map(({ node, depth }) => {
@@ -285,8 +431,11 @@ function renderProjectPage() {
     <section class="project-main">
       <div class="project-main-top"><button class="btn btn-muted" id="toggle-sidebar">${state.projectUi.sidebarCollapsed ? "Show tree" : "Hide tree"}</button><button class="btn btn-muted" id="back-main">Back</button></div>
       <div class="active-panel">
-        <h3>${selectedPath ? escapeHtml(selectedPath) : "No node selected"}</h3>
-        <p>Node type: <strong>${escapeHtml(selectedType)}</strong></p>
+        <div class="active-header">
+          <h3>${selectedPath ? escapeHtml(selectedPath) : "No node selected"}</h3>
+          <p>Node type: <strong>${escapeHtml(selectedType)}</strong></p>
+        </div>
+        <div class="active-tool-body">${renderNodeTool(selectedNode)}</div>
       </div>
       <div class="editor-panel ${showEditor ? "" : "hidden"}">
         <div class="editor-header"><h4>Node Editor</h4><button class="btn btn-muted" id="toggle-editor">${showEditor ? "Hide" : "Show"}</button></div>
@@ -321,6 +470,13 @@ function renderProjectPage() {
     rowEl.onclick = (e) => {
       if (e.target.closest("[data-toggle-node]")) return;
       state.projectUi.selectedNodeId = rowEl.dataset.selectNode;
+      const nextNode = rows.find((row) => row.node.id === state.projectUi.selectedNodeId)?.node;
+      if (nextNode && getNodeDisplayType(nextNode) === "text") {
+        const toolState = getNodeToolState(nextNode);
+        const history = ensureTextHistory(nextNode);
+        if (typeof toolState.historyIndex !== "number") toolState.historyIndex = history.length - 1;
+        if (typeof toolState.draft !== "string") toolState.draft = history[history.length - 1].text || "";
+      }
       renderProjectPage();
     };
   }
@@ -434,6 +590,8 @@ function renderProjectPage() {
       await applyAndSave();
     };
   }
+
+  bindNodeToolEvents(selectedNode);
 }
 
 function renderDetailsPage() {
