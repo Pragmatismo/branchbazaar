@@ -412,11 +412,13 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
             parts = parsed.path.split("/")
             if len(parts) >= 4:
                 slug = parts[2]
-                filename = parts[3]
-                asset_path = PROJECTS_DIR / slug / filename
+                asset_relative_path = "/".join(parts[3:])
+                asset_path = PROJECTS_DIR / slug / asset_relative_path
                 if asset_path.exists() and asset_path.is_file():
                     content = asset_path.read_bytes()
-                    content_type = mimetypes.guess_type(filename)[0] or ("image/svg+xml" if filename.endswith(".svg") else "application/octet-stream")
+                    content_type = mimetypes.guess_type(asset_relative_path)[0] or (
+                        "image/svg+xml" if asset_relative_path.endswith(".svg") else "application/octet-stream"
+                    )
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", content_type)
                     self.send_header("Content-Length", str(len(content)))
@@ -456,7 +458,7 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
             if not file_path:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid image payload"})
                 return
-            self._json(HTTPStatus.CREATED, {"file_path": file_path})
+            self._json(HTTPStatus.CREATED, {"file_path": file_path, "asset_url": f"/assets/{slug}/{file_path}"})
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
 

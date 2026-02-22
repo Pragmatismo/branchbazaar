@@ -190,9 +190,10 @@ function renderNodeTool(node) {
     </div>`;
   }
   if (type === "image") {
-    const hasImage = !!node.file_path;
+    const imagePath = node.image_url || (node.file_path ? `/assets/${encodeURIComponent(state.currentProject.slug)}/${node.file_path}` : "");
+    const hasImage = !!imagePath;
     return `<div class="node-tool image-tool">
-      <div class="image-preview-wrap">${hasImage ? `<img class="image-preview" src="/assets/${encodeURIComponent(state.currentProject.slug)}/${node.file_path}" alt="Node image" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
+      <div class="image-preview-wrap">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Node image" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
       <div class="image-tool-actions">
         <button class="btn btn-primary" id="image-tool-upload">Upload</button>
         <input id="image-tool-file" type="file" accept="image/*" class="hidden" />
@@ -208,10 +209,20 @@ function bindNodeToolEvents(node) {
   if (type === "text") {
     const toolState = getNodeToolState(node);
     const area = document.getElementById("text-tool-content");
+    const syncTextToolActions = () => {
+      const history = ensureTextHistory(node);
+      const latest = history[history.length - 1];
+      const changed = toolState.draft !== (latest.text || "");
+      const atLatest = toolState.historyIndex === history.length - 1;
+      const saveBtn = document.getElementById("text-tool-save");
+      const revertBtn = document.getElementById("text-tool-revert");
+      if (saveBtn) saveBtn.disabled = !(changed && atLatest);
+      if (revertBtn) revertBtn.disabled = !(changed && atLatest);
+    };
     if (area) {
       area.oninput = () => {
         toolState.draft = area.value;
-        renderProjectPage();
+        syncTextToolActions();
       };
     }
     const saveBtn = document.getElementById("text-tool-save");
@@ -245,6 +256,7 @@ function bindNodeToolEvents(node) {
       if (toolState.historyIndex === history.length - 1) toolState.draft = history[history.length - 1].text || "";
       renderProjectPage();
     };
+    syncTextToolActions();
     return;
   }
   if (type === "image") {
@@ -272,6 +284,7 @@ function bindNodeToolEvents(node) {
       }
       const payload = await res.json();
       node.file_path = payload.file_path;
+      node.image_url = payload.asset_url || "";
       node.status = "done";
       node.lock_subnodes = true;
       await persistProjectStructure();
