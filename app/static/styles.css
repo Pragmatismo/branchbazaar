@@ -122,3 +122,40 @@ input, textarea, select {
   text-align: center;
   color: #64748b;
 }
+
+
+.panel { position: relative; }
+.status-pill {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  background: #6b4423;
+  color: #fefce8;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 12px;
+  text-align: center;
+  padding: 6px;
+}
+.deliverables-header { font-weight: 600; margin-bottom: 8px; }
+.deliverables-list { display: grid; gap: 10px; }
+.deliverable-item {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+.deliverable-item.selected {
+  border-color: #2563eb;
+  box-shadow: inset 0 0 0 1px #2563eb;
+}
+.deliverable-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
