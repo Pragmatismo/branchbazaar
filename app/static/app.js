@@ -9,6 +9,8 @@ const state = {
   currentProject: null,
   detailDraft: null,
   error: "",
+  projectStructures: {},
+  projectUi: null,
 };
 
 const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
@@ -49,6 +51,87 @@ function filteredProjects() {
     return (b.updated_at || "").localeCompare(a.updated_at || "");
   });
   return items;
+}
+
+
+function uid() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `node-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+function ensureProjectUiState() {
+  if (!state.projectUi) {
+    state.projectUi = { sidebarWidth: 340, sidebarCollapsed: false, collapsedNodes: {}, selectedNodeId: "", editorOpen: false };
+  }
+}
+
+function ensureStructureLoaded() {
+  if (!state.currentProject) return;
+  if (!state.projectStructures) state.projectStructures = {};
+  if (!state.projectStructures[state.currentProject.slug]) {
+    state.projectStructures[state.currentProject.slug] = { nodes: [] };
+  }
+}
+
+async function loadProjectStructure(slug) {
+  const res = await fetch(`/api/project-structure?slug=${encodeURIComponent(slug)}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (!state.projectStructures) state.projectStructures = {};
+  state.projectStructures[slug] = { nodes: Array.isArray(data.nodes) ? data.nodes : [] };
+}
+
+async function persistProjectStructure() {
+  if (!state.currentProject) return;
+  ensureStructureLoaded();
+  await fetch(`/api/project-structure?slug=${encodeURIComponent(state.currentProject.slug)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(state.projectStructures[state.currentProject.slug]),
+  });
+}
+
+function flattenNodes(nodes, depth = 0, parentPath = []) {
+  const rows = [];
+  for (const node of nodes || []) {
+    const path = [...parentPath, node.name || "Untitled"];
+    rows.push({ node, depth, path });
+    if (Array.isArray(node.children) && node.children.length) {
+      rows.push(...flattenNodes(node.children, depth + 1, path));
+    }
+  }
+  return rows;
+}
+
+function findNodeAndParent(nodes, nodeId, parent = null) {
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (node.id === nodeId) return { node, parent, index: i, siblings: nodes };
+    if (node.children?.length) {
+      const found = findNodeAndParent(node.children, nodeId, node);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function duplicateNodeTree(node) {
+  const copy = structuredClone(node);
+  const visit = (item, parentId = null) => {
+    item.id = uid();
+    item.parent_id = parentId;
+    item.children = item.children || [];
+    for (const child of item.children) visit(child, item.id);
+  };
+  visit(copy, copy.parent_id || null);
+  return copy;
+}
+
+function nextDuplicateName(name, siblingNames) {
+  const base = name.replace(/\s#\d+$/, "");
+  let n = 1;
+  while (siblingNames.has(`${base} #${n}`)) n += 1;
+  return `${base} #${n}`;
 }
 
 function renderDiscovery() {
@@ -140,23 +223,217 @@ function renderDiscovery() {
   };
 
   for (const card of document.querySelectorAll("[data-open-project]")) {
-    card.onclick = () => {
+    card.onclick = async () => {
       const slug = card.dataset.openProject;
       state.currentProject = state.projects.find((p) => p.slug === slug) || null;
       state.view = "project";
+      await loadProjectStructure(slug);
       render();
     };
   }
 }
 
 function renderProjectPage() {
-  app.innerHTML = `<main class="page"><section class="panel"><h2>Project pages coming soon</h2><p>This placeholder confirms navigation for project <strong>${escapeHtml(
-    state.currentProject?.project_name || ""
-  )}</strong>.</p><button class="btn btn-primary" id="back-main">Back to discovery</button></section></main>`;
+  ensureProjectUiState();
+  ensureStructureLoaded();
+  const structure = state.projectStructures[state.currentProject.slug];
+  const nodes = structure.nodes;
+  const visibleNodes = (items, depth = 0, parentPath = []) => {
+    const list = [];
+    for (const node of items || []) {
+      const path = [...parentPath, node.name || "Untitled"];
+      list.push({ node, depth, path });
+      if (node.children?.length && !state.projectUi.collapsedNodes[node.id]) {
+        list.push(...visibleNodes(node.children, depth + 1, path));
+      }
+    }
+    return list;
+  };
+  const rows = visibleNodes(nodes);
+  if (!state.projectUi.selectedNodeId && rows[0]) state.projectUi.selectedNodeId = rows[0].node.id;
+  const selected = rows.find((row) => row.node.id === state.projectUi.selectedNodeId) || rows[0] || null;
+  const selectedNode = selected?.node || null;
+  const selectedPath = selected ? selected.path.join(" : ") : "";
+  const selectedType = selectedNode?.node_type === "component" ? (selectedNode.component_type || "text") : selectedNode?.node_type || "component";
+
+  const treeHtml = rows
+    .map(({ node, depth }) => {
+      const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+      const isCollapsed = !!state.projectUi.collapsedNodes[node.id];
+      const isSelected = node.id === state.projectUi.selectedNodeId;
+      const toggle = hasChildren
+        ? `<button class="tree-toggle" data-toggle-node="${node.id}">${isCollapsed ? "+" : "-"}</button>`
+        : `<span class="tree-toggle-placeholder"></span>`;
+      return `<tr class="tree-row ${isSelected ? "selected" : ""}" data-select-node="${node.id}"><td style="padding-left:${12 + depth * 18}px">${toggle}<span>${escapeHtml(node.name || "Untitled")}</span></td><td>${escapeHtml(node.status || "new")}</td></tr>`;
+    })
+    .join("");
+
+  const canEdit = selectedNode && !selectedNode.is_top_level;
+  const showEditor = state.projectUi.editorOpen && !!selectedNode;
+  app.innerHTML = `<main class="project-page">
+    <aside class="project-sidebar ${state.projectUi.sidebarCollapsed ? "collapsed" : ""}" style="width:${state.projectUi.sidebarCollapsed ? 0 : state.projectUi.sidebarWidth}px">
+      <div class="sidebar-top">
+        <h2>${escapeHtml(state.currentProject.project_name || "")}</h2>
+        <p>${escapeHtml(state.currentProject.description || "")}</p>
+      </div>
+      <div class="tree-wrap">
+        <table class="tree-table"><thead><tr><th>Node</th><th>Status</th></tr></thead><tbody>${treeHtml}</tbody></table>
+      </div>
+      <div class="tree-actions"><button class="btn btn-primary" id="add-node">Add</button><button class="btn btn-muted" id="duplicate-node">Duplicate</button><button class="btn btn-muted" id="edit-node">Edit</button><button class="btn btn-muted" id="remove-node">Remove</button></div>
+      <div class="resize-handle" id="resize-handle"></div>
+    </aside>
+    <section class="project-main">
+      <div class="project-main-top"><button class="btn btn-muted" id="toggle-sidebar">${state.projectUi.sidebarCollapsed ? "Show tree" : "Hide tree"}</button><button class="btn btn-muted" id="back-main">Back</button></div>
+      <div class="active-panel">
+        <h3>${selectedPath ? escapeHtml(selectedPath) : "No node selected"}</h3>
+        <p>Node type: <strong>${escapeHtml(selectedType)}</strong></p>
+      </div>
+      <div class="editor-panel ${showEditor ? "" : "hidden"}">
+        <div class="editor-header"><h4>Node Editor</h4><button class="btn btn-muted" id="toggle-editor">${showEditor ? "Hide" : "Show"}</button></div>
+        ${selectedNode ? `<div class="editor-grid">
+          <label class="field">Name <input id="node-name" value="${escapeHtml(selectedNode.name || "")}" ${selectedNode.immutable_name ? "disabled" : ""} /></label>
+          <label class="field">Description <textarea id="node-description" rows="2">${escapeHtml(selectedNode.description || "")}</textarea></label>
+          <label class="field">Node Type <select id="node-type"><option value="component" ${selectedNode.node_type === "component" ? "selected" : ""}>component</option><option value="choice" ${selectedNode.node_type === "choice" ? "selected" : ""}>choice</option><option value="tool" ${selectedNode.node_type === "tool" ? "selected" : ""}>tool</option></select></label>
+          <label class="field ${selectedNode.node_type === "component" ? "" : "hidden"}">Component Type <select id="component-type"><option value="image" ${selectedNode.component_type === "image" ? "selected" : ""}>image</option><option value="video" ${selectedNode.component_type === "video" ? "selected" : ""}>video</option><option value="text" ${selectedNode.component_type === "text" ? "selected" : ""}>text</option><option value="link" ${selectedNode.component_type === "link" ? "selected" : ""}>link</option><option value="file" ${selectedNode.component_type === "file" ? "selected" : ""}>file</option></select></label>
+          <label class="field ${selectedNode.node_type === "choice" ? "" : "hidden"}"><input type="checkbox" id="choice-between" ${selectedNode.choice_between_components ? "checked" : ""} /> between components</label>
+        </div>` : ""}
+      </div>
+    </section>
+  </main>`;
+
   document.getElementById("back-main").onclick = () => {
     state.view = "discovery";
     render();
   };
+
+  document.getElementById("toggle-sidebar").onclick = () => {
+    state.projectUi.sidebarCollapsed = !state.projectUi.sidebarCollapsed;
+    renderProjectPage();
+  };
+
+  const toggleEditorBtn = document.getElementById("toggle-editor");
+  if (toggleEditorBtn) toggleEditorBtn.onclick = () => {
+    state.projectUi.editorOpen = !state.projectUi.editorOpen;
+    renderProjectPage();
+  };
+
+  for (const rowEl of document.querySelectorAll("[data-select-node]")) {
+    rowEl.onclick = (e) => {
+      if (e.target.closest("[data-toggle-node]")) return;
+      state.projectUi.selectedNodeId = rowEl.dataset.selectNode;
+      renderProjectPage();
+    };
+  }
+  for (const toggle of document.querySelectorAll("[data-toggle-node]")) {
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      const id = toggle.dataset.toggleNode;
+      state.projectUi.collapsedNodes[id] = !state.projectUi.collapsedNodes[id];
+      renderProjectPage();
+    };
+  }
+
+  const selectedInfo = selectedNode ? findNodeAndParent(nodes, selectedNode.id) : null;
+  document.getElementById("add-node").onclick = async () => {
+    if (!selectedNode || selectedNode.lock_subnodes) return;
+    selectedNode.children = selectedNode.children || [];
+    const newNode = { id: uid(), parent_id: selectedNode.id, name: "", description: "", node_type: "component", component_type: "text", choice_between_components: false, status: "new", lock_subnodes: false, notes: "", discussion: [], children: [] };
+    selectedNode.children.push(newNode);
+    state.projectUi.selectedNodeId = newNode.id;
+    state.projectUi.editorOpen = true;
+    await persistProjectStructure();
+    renderProjectPage();
+    setTimeout(() => document.getElementById("node-name")?.focus(), 0);
+  };
+
+  document.getElementById("duplicate-node").onclick = async () => {
+    if (!selectedInfo || selectedInfo.node.is_top_level) return;
+    const clone = duplicateNodeTree(selectedInfo.node);
+    const siblingNames = new Set((selectedInfo.siblings || []).map((n) => n.name));
+    clone.name = nextDuplicateName(selectedInfo.node.name || "Untitled", siblingNames);
+    clone.parent_id = selectedInfo.parent ? selectedInfo.parent.id : null;
+    selectedInfo.siblings.splice(selectedInfo.index + 1, 0, clone);
+    state.projectUi.selectedNodeId = clone.id;
+    await persistProjectStructure();
+    renderProjectPage();
+  };
+
+  document.getElementById("remove-node").onclick = async () => {
+    if (!selectedInfo || selectedInfo.node.is_top_level) return;
+    selectedInfo.siblings.splice(selectedInfo.index, 1);
+    state.projectUi.selectedNodeId = rows[0]?.node.id || "";
+    await persistProjectStructure();
+    renderProjectPage();
+  };
+
+  document.getElementById("edit-node").onclick = () => {
+    if (!canEdit) return;
+    state.projectUi.editorOpen = true;
+    renderProjectPage();
+    setTimeout(() => document.getElementById("node-name")?.focus(), 0);
+  };
+
+  const resizeHandle = document.getElementById("resize-handle");
+  if (resizeHandle) {
+    resizeHandle.onmousedown = (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = state.projectUi.sidebarWidth;
+      const onMove = (ev) => {
+        const next = Math.max(240, Math.min(620, startWidth + (ev.clientX - startX)));
+        state.projectUi.sidebarWidth = next;
+        const sidebar = document.querySelector(".project-sidebar");
+        if (sidebar && !state.projectUi.sidebarCollapsed) sidebar.style.width = `${next}px`;
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    };
+  }
+
+  if (selectedNode) {
+    const applyAndSave = async () => {
+      await persistProjectStructure();
+      renderProjectPage();
+    };
+    const name = document.getElementById("node-name");
+    if (name) {
+      name.onblur = async (e) => {
+        selectedNode.name = e.target.value;
+        await applyAndSave();
+      };
+      name.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          selectedNode.name = e.target.value;
+          await applyAndSave();
+        }
+      };
+    }
+    const desc = document.getElementById("node-description");
+    if (desc) desc.onblur = async (e) => {
+      selectedNode.description = e.target.value;
+      await applyAndSave();
+    };
+    const nodeType = document.getElementById("node-type");
+    if (nodeType) nodeType.onchange = async (e) => {
+      selectedNode.node_type = e.target.value;
+      await applyAndSave();
+    };
+    const componentType = document.getElementById("component-type");
+    if (componentType) componentType.onchange = async (e) => {
+      selectedNode.component_type = e.target.value;
+      await applyAndSave();
+    };
+    const choiceBetween = document.getElementById("choice-between");
+    if (choiceBetween) choiceBetween.onchange = async (e) => {
+      selectedNode.choice_between_components = e.target.checked;
+      await applyAndSave();
+    };
+  }
 }
 
 function renderDetailsPage() {
@@ -332,5 +609,6 @@ function render() {
 
 (async () => {
   await loadProjects();
+  if (!state.projectStructures) state.projectStructures = {};
   render();
 })();
