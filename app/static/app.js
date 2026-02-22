@@ -12,7 +12,7 @@ const state = {
 };
 
 const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
-const deliverables = ["image", "image set", "video", "software", "guide", "design", "product", "custom"];
+const deliverableTypes = ["image", "image set", "video", "software", "guide", "design", "product", "custom"];
 
 const app = document.getElementById("app");
 
@@ -89,7 +89,7 @@ function renderDiscovery() {
     <section class="tools">
       <input id="search" placeholder="Search projects or tags" value="${escapeHtml(state.search)}" />
       <select id="sort"><option value="updated" ${state.sort === "updated" ? "selected" : ""}>Sort: Updated</option><option value="name" ${state.sort === "name" ? "selected" : ""}>Sort: Name</option></select>
-      <select id="deliverable-filter"><option value="all">All deliverables</option>${deliverables
+      <select id="deliverable-filter"><option value="all">All deliverables</option>${deliverableTypes
         .map((d) => `<option value="${d}" ${state.deliverableFilter === d ? "selected" : ""}>${d}</option>`)
         .join("")}</select>
       <div>
@@ -106,6 +106,7 @@ function renderDiscovery() {
       project_name: "new project",
       description: "",
       deliverable_type: "custom",
+      deliverables: [{ name: "", description: "", type: "custom", link: "" }],
       done_condition: "",
       tags: [],
       icon_mode: "automatic",
@@ -160,6 +161,9 @@ function renderProjectPage() {
 
 function renderDetailsPage() {
   const d = state.detailDraft;
+  if (!Array.isArray(d.deliverables) || !d.deliverables.length) {
+    d.deliverables = [{ name: "", description: "", type: d.deliverable_type || "custom", link: "" }];
+  }
   app.innerHTML = `<main class="page"><section class="panel">
     <h2>Project Details</h2>
     <p class="subtitle">Create and save details used for the project thumbnail and discovery list.</p>
@@ -167,10 +171,16 @@ function renderDetailsPage() {
     <div class="form-grid">
       <label class="field wide">Project Name <input id="project_name" value="${escapeHtml(d.project_name)}" /></label>
       <label class="field wide">Description <textarea id="description" rows="2">${escapeHtml(d.description)}</textarea></label>
-      <label class="field">Deliverable Type <select id="deliverable_type">${deliverables
-        .map((value) => `<option value="${value}" ${d.deliverable_type === value ? "selected" : ""}>${value}</option>`)
-        .join("")}</select></label>
-      <label class="field">Current Status <input value="${escapeHtml(d.status)}" disabled /><span class="help">Status is displayed here and updated elsewhere.</span></label>
+      <div class="status-pill" aria-label="Current status">${escapeHtml((d.status || "new").toUpperCase())}</div>
+      <div class="field wide">
+        <div class="deliverables-header">Deliverables</div>
+        <div id="deliverables-list" class="deliverables-list"></div>
+        <div class="deliverable-actions">
+          <button type="button" class="btn btn-muted" id="add-deliverable">Add</button>
+          <button type="button" class="btn btn-muted" id="duplicate-deliverable">Duplicate</button>
+          <button type="button" class="btn btn-muted" id="remove-deliverable">Remove</button>
+        </div>
+      </div>
       <label class="field wide">Done Condition <textarea id="done_condition" rows="2">${escapeHtml(d.done_condition)}</textarea></label>
       <label class="field">Tags (comma separated)<input id="tags" value="${escapeHtml((d.tags || []).join(", "))}"/></label>
       <label class="field">Tag Suggestions<select id="tag_pick"><option value="">Select a tag to add</option>${suggestedTags
@@ -190,11 +200,87 @@ function renderDetailsPage() {
   };
   bind("project_name", "project_name");
   bind("description", "description");
-  bind("deliverable_type", "deliverable_type");
   bind("done_condition", "done_condition");
   bind("icon_mode", "icon_mode");
   bind("icon_image", "icon_image");
 
+
+  const normalizeDeliverables = () => {
+    if (!Array.isArray(state.detailDraft.deliverables) || !state.detailDraft.deliverables.length) {
+      state.detailDraft.deliverables = [{ name: "", description: "", type: "custom", link: "" }];
+    }
+    state.detailDraft.deliverables = state.detailDraft.deliverables.map((item) => ({
+      name: item?.name || "",
+      description: item?.description || "",
+      type: deliverableTypes.includes(item?.type) ? item.type : "custom",
+      link: item?.link || "",
+    }));
+    state.detailDraft.selectedDeliverableIndex = Math.min(
+      Math.max(state.detailDraft.selectedDeliverableIndex || 0, 0),
+      state.detailDraft.deliverables.length - 1
+    );
+    state.detailDraft.deliverable_type = state.detailDraft.deliverables[0].type;
+  };
+
+  const renderDeliverables = () => {
+    normalizeDeliverables();
+    const list = document.getElementById("deliverables-list");
+    list.innerHTML = state.detailDraft.deliverables
+      .map((item, index) => `<div class="deliverable-item ${index === state.detailDraft.selectedDeliverableIndex ? "selected" : ""}" data-deliverable-index="${index}">
+        <label class="field">Name <input data-deliverable-field="name" data-deliverable-index="${index}" value="${escapeHtml(item.name)}" /></label>
+        <label class="field">Description <textarea rows="2" data-deliverable-field="description" data-deliverable-index="${index}">${escapeHtml(item.description)}</textarea></label>
+        <label class="field">Type <select data-deliverable-field="type" data-deliverable-index="${index}">${deliverableTypes
+          .map((value) => `<option value="${value}" ${item.type === value ? "selected" : ""}>${value}</option>`)
+          .join("")}</select></label>
+      </div>`)
+      .join("");
+
+    for (const el of list.querySelectorAll(".deliverable-item")) {
+      el.onclick = (e) => {
+        const idx = Number(e.currentTarget.dataset.deliverableIndex);
+        if (Number.isNaN(idx)) return;
+        state.detailDraft.selectedDeliverableIndex = idx;
+        renderDeliverables();
+      };
+    }
+
+    for (const field of list.querySelectorAll("[data-deliverable-field]")) {
+      const eventName = field.tagName === "SELECT" ? "change" : "input";
+      field.addEventListener(eventName, (e) => {
+        const idx = Number(e.target.dataset.deliverableIndex);
+        const key = e.target.dataset.deliverableField;
+        state.detailDraft.deliverables[idx][key] = e.target.value;
+        state.detailDraft.deliverable_type = state.detailDraft.deliverables[0].type;
+      });
+    }
+  };
+
+  normalizeDeliverables();
+  renderDeliverables();
+
+  document.getElementById("add-deliverable").onclick = () => {
+    state.detailDraft.deliverables.push({ name: "", description: "", type: "custom", link: "" });
+    state.detailDraft.selectedDeliverableIndex = state.detailDraft.deliverables.length - 1;
+    renderDeliverables();
+  };
+
+  document.getElementById("duplicate-deliverable").onclick = () => {
+    normalizeDeliverables();
+    const idx = state.detailDraft.selectedDeliverableIndex || 0;
+    const source = state.detailDraft.deliverables[idx];
+    state.detailDraft.deliverables.splice(idx + 1, 0, { ...source, link: "" });
+    state.detailDraft.selectedDeliverableIndex = idx + 1;
+    renderDeliverables();
+  };
+
+  document.getElementById("remove-deliverable").onclick = () => {
+    normalizeDeliverables();
+    if (state.detailDraft.deliverables.length <= 1) return;
+    const idx = state.detailDraft.selectedDeliverableIndex || 0;
+    state.detailDraft.deliverables.splice(idx, 1);
+    state.detailDraft.selectedDeliverableIndex = Math.max(0, idx - 1);
+    renderDeliverables();
+  };
   document.getElementById("tags").oninput = (e) => {
     state.detailDraft.tags = e.target.value
       .split(",")

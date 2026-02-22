@@ -24,6 +24,7 @@ class Project:
     project_name: str
     description: str
     deliverable_type: str
+    deliverables: list[dict[str, str]]
     done_condition: str
     tags: list[str]
     icon_mode: str
@@ -69,6 +70,7 @@ def read_project(json_path: Path) -> Project | None:
             project_name=payload["project_name"],
             description=payload.get("description", ""),
             deliverable_type=payload.get("deliverable_type", "custom"),
+            deliverables=payload.get("deliverables", []),
             done_condition=payload.get("done_condition", ""),
             tags=[tag.strip() for tag in payload.get("tags", []) if str(tag).strip()],
             icon_mode=payload.get("icon_mode", "automatic"),
@@ -131,9 +133,30 @@ def parse_project_payload(raw: dict[str, Any]) -> tuple[Project | None, str | No
     name = str(raw.get("project_name", "")).strip()
     if not name:
         return None, "Project Name is required."
-    deliverable = str(raw.get("deliverable_type", "custom")).strip().lower()
-    if deliverable not in DELIVERABLE_TYPES:
-        return None, "Deliverable Type is invalid."
+    raw_deliverables = raw.get("deliverables")
+    deliverables: list[dict[str, str]] = []
+    if isinstance(raw_deliverables, list):
+        for item in raw_deliverables:
+            if not isinstance(item, dict):
+                continue
+            deliverable_type = str(item.get("type", "custom")).strip().lower()
+            if deliverable_type not in DELIVERABLE_TYPES:
+                return None, "Deliverable Type is invalid."
+            deliverables.append(
+                {
+                    "name": str(item.get("name", "")).strip(),
+                    "description": str(item.get("description", "")).strip(),
+                    "type": deliverable_type,
+                    "link": str(item.get("link", "")).strip(),
+                }
+            )
+    if not deliverables:
+        legacy_deliverable = str(raw.get("deliverable_type", "custom")).strip().lower()
+        if legacy_deliverable not in DELIVERABLE_TYPES:
+            return None, "Deliverable Type is invalid."
+        deliverables = [{"name": "", "description": "", "type": legacy_deliverable, "link": ""}]
+
+    deliverable = deliverables[0]["type"]
     icon_mode = str(raw.get("icon_mode", "automatic")).strip().lower()
     if icon_mode not in {"automatic", "custom"}:
         return None, "Icon mode must be automatic or custom."
@@ -155,6 +178,7 @@ def parse_project_payload(raw: dict[str, Any]) -> tuple[Project | None, str | No
         project_name=name,
         description=str(raw.get("description", "")).strip(),
         deliverable_type=deliverable,
+        deliverables=deliverables,
         done_condition=str(raw.get("done_condition", "")).strip(),
         tags=tags,
         icon_mode=icon_mode,
