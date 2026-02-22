@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -58,6 +59,14 @@ def project_json_path(project_name: str) -> Path:
 
 def thumbnail_path(project_name: str) -> Path:
     return project_dir(project_name) / "thumbnail.svg"
+
+
+def project_nodes_index_path(slug: str) -> Path:
+    return PROJECTS_DIR / slug / "project_nodes.json"
+
+
+def top_level_node_path(slug: str, node_id: str) -> Path:
+    return PROJECTS_DIR / slug / f"node_{node_id}.json"
 
 
 def read_project(json_path: Path) -> Project | None:
@@ -217,6 +226,115 @@ def save_project(payload: dict[str, Any], original_slug: str | None = None) -> t
     return result, None
 
 
+def default_node(name: str, parent_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": str(uuid.uuid4()),
+        "parent_id": parent_id,
+        "name": name,
+        "description": "",
+        "node_type": "component",
+        "component_type": "text",
+        "choice_between_components": False,
+        "status": "new",
+        "lock_subnodes": False,
+        "notes": "",
+        "discussion": [],
+        "children": [],
+    }
+
+
+def load_project_structure(slug: str) -> dict[str, Any]:
+    base = PROJECTS_DIR / slug
+    project = read_project(base / "project.json")
+    if not project:
+        return {"nodes": []}
+
+    desired_deliverables = project.deliverables or [{"name": "Deliverable", "type": project.deliverable_type}]
+    desired_names = [item.get("name", "").strip() or f"Deliverable {idx + 1}" for idx, item in enumerate(desired_deliverables)]
+
+    index_path = project_nodes_index_path(slug)
+    index_payload: dict[str, Any] = {"top_level": []}
+    if index_path.exists():
+        try:
+            index_payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            index_payload = {"top_level": []}
+
+    existing_nodes: dict[str, dict[str, Any]] = {}
+    for entry in index_payload.get("top_level", []):
+        node_id = entry.get("id")
+        if not node_id:
+            continue
+        node_path = top_level_node_path(slug, node_id)
+        if not node_path.exists():
+            continue
+        try:
+            existing_nodes[node_id] = json.loads(node_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    updated_top_level: list[dict[str, Any]] = []
+    used_deliverable_ids = set()
+    for idx, deliverable_name in enumerate(desired_names):
+        matched = None
+        for entry in index_payload.get("top_level", []):
+            if entry.get("kind") != "deliverable" or entry.get("deliverable_index") in used_deliverable_ids:
+                continue
+            if entry.get("deliverable_index") == idx:
+                matched = entry
+                break
+        node = None
+        if matched:
+            node = existing_nodes.get(matched.get("id"))
+        if not node:
+            node = default_node(deliverable_name)
+        node["name"] = deliverable_name
+        node["immutable_name"] = True
+        node["is_top_level"] = True
+        node["top_level_kind"] = "deliverable"
+        node["deliverable_index"] = idx
+        updated_top_level.append({"id": node["id"], "kind": "deliverable", "deliverable_index": idx})
+        existing_nodes[node["id"]] = node
+        used_deliverable_ids.add(idx)
+
+    doc_entry = next((e for e in index_payload.get("top_level", []) if e.get("kind") == "documentation"), None)
+    doc_node = existing_nodes.get(doc_entry.get("id")) if doc_entry else None
+    if not doc_node:
+        doc_node = default_node("Documentation")
+    doc_node["name"] = "Documentation"
+    doc_node["immutable_name"] = True
+    doc_node["is_top_level"] = True
+    doc_node["top_level_kind"] = "documentation"
+    updated_top_level.append({"id": doc_node["id"], "kind": "documentation"})
+    existing_nodes[doc_node["id"]] = doc_node
+
+    for entry in updated_top_level:
+        node = existing_nodes[entry["id"]]
+        top_level_node_path(slug, node["id"]).write_text(json.dumps(node, indent=2), encoding="utf-8")
+
+    index_payload = {"top_level": updated_top_level, "updated_at": now_iso()}
+    index_path.write_text(json.dumps(index_payload, indent=2), encoding="utf-8")
+
+    nodes = [existing_nodes[entry["id"]] for entry in updated_top_level]
+    return {"nodes": nodes}
+
+
+def save_project_structure(slug: str, nodes: list[dict[str, Any]]) -> None:
+    top_level_entries: list[dict[str, Any]] = []
+    for node in nodes:
+        if not node.get("id"):
+            node["id"] = str(uuid.uuid4())
+        node_path = top_level_node_path(slug, node["id"])
+        node_path.write_text(json.dumps(node, indent=2), encoding="utf-8")
+        entry = {"id": node["id"], "kind": node.get("top_level_kind", "deliverable")}
+        if node.get("top_level_kind") == "deliverable":
+            entry["deliverable_index"] = int(node.get("deliverable_index", 0))
+        top_level_entries.append(entry)
+    project_nodes_index_path(slug).write_text(
+        json.dumps({"top_level": top_level_entries, "updated_at": now_iso()}, indent=2), encoding="utf-8"
+    )
+
+
 class BranchBazaarHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -242,6 +360,15 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/projects":
             self._json(HTTPStatus.OK, {"projects": list_projects()})
+            return
+        if parsed.path == "/api/project-structure":
+            query = parse_qs(parsed.query)
+            slug = query.get("slug", [""])[0].strip()
+            if not slug:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "slug is required"})
+                return
+            structure = load_project_structure(slug)
+            self._json(HTTPStatus.OK, structure)
             return
         if parsed.path.startswith("/assets/"):
             parts = parsed.path.split("/")
@@ -279,6 +406,20 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/project-structure":
+            query = parse_qs(parsed.query)
+            slug = query.get("slug", [""])[0].strip()
+            payload = self._read_json_body()
+            if not slug or payload is None:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "slug and JSON body are required"})
+                return
+            nodes = payload.get("nodes", [])
+            if not isinstance(nodes, list):
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "nodes must be a list"})
+                return
+            save_project_structure(slug, nodes)
+            self._json(HTTPStatus.OK, {"ok": True})
+            return
         if parsed.path == "/api/projects":
             query = parse_qs(parsed.query)
             original_slug = query.get("original", [None])[0]
