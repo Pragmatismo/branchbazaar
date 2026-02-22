@@ -1,0 +1,250 @@
+const state = {
+  projects: [],
+  view: "discovery",
+  mode: "grid",
+  search: "",
+  sort: "updated",
+  deliverableFilter: "all",
+  statusFilter: "all",
+  currentProject: null,
+  detailDraft: null,
+  error: "",
+};
+
+const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
+const deliverables = ["image", "image set", "video", "software", "guide", "design", "product", "custom"];
+
+const app = document.getElementById("app");
+
+function escapeHtml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+async function loadProjects() {
+  const res = await fetch("/api/projects");
+  const data = await res.json();
+  state.projects = data.projects || [];
+}
+
+function filteredProjects() {
+  let items = [...state.projects];
+  if (state.search.trim()) {
+    const needle = state.search.trim().toLowerCase();
+    items = items.filter((p) =>
+      [p.project_name, p.description, ...(p.tags || [])].join(" ").toLowerCase().includes(needle)
+    );
+  }
+  if (state.deliverableFilter !== "all") {
+    items = items.filter((p) => p.deliverable_type === state.deliverableFilter);
+  }
+  if (state.statusFilter !== "all") {
+    items = items.filter((p) => p.status === state.statusFilter);
+  }
+  items.sort((a, b) => {
+    if (state.sort === "name") return a.project_name.localeCompare(b.project_name);
+    return (b.updated_at || "").localeCompare(a.updated_at || "");
+  });
+  return items;
+}
+
+function renderDiscovery() {
+  const items = filteredProjects();
+  const cards = items
+    .map((project) => {
+      const tags = (project.tags || []).slice(0, 4).map((tag) => `<span class="badge">${escapeHtml(tag)}</span>`).join("");
+      if (state.mode === "list") {
+        return `<article class="card card-row" data-open-project="${project.slug}">
+          <img class="thumb" src="${project.thumbnail_url}" alt="${escapeHtml(project.project_name)} thumbnail" />
+          <div class="card-content">
+            <h3 class="card-title">${escapeHtml(project.project_name)}</h3>
+            <p class="card-desc">${escapeHtml(project.description || "No description yet.")}</p>
+            <div class="badges"><span class="badge">${project.status}</span><span class="badge">${project.deliverable_type}</span>${tags}</div>
+          </div>
+        </article>`;
+      }
+      return `<article class="card" data-open-project="${project.slug}">
+        <img class="thumb" src="${project.thumbnail_url}" alt="${escapeHtml(project.project_name)} thumbnail" />
+        <div class="card-content">
+          <h3 class="card-title">${escapeHtml(project.project_name)}</h3>
+          <p class="card-desc">${escapeHtml(project.description || "No description yet.")}</p>
+          <div class="badges"><span class="badge">${project.status}</span><span class="badge">${project.deliverable_type}</span></div>
+        </div>
+      </article>`;
+    })
+    .join("");
+
+  app.innerHTML = `<main class="page">
+    <header class="top-bar">
+      <div class="title-wrap">
+        <h1>Branch Bazaar</h1>
+        <p class="subtitle">A garden of active projects</p>
+      </div>
+      <button class="btn btn-primary" id="new-project">Create New Project</button>
+    </header>
+
+    <section class="tools">
+      <input id="search" placeholder="Search projects or tags" value="${escapeHtml(state.search)}" />
+      <select id="sort"><option value="updated" ${state.sort === "updated" ? "selected" : ""}>Sort: Updated</option><option value="name" ${state.sort === "name" ? "selected" : ""}>Sort: Name</option></select>
+      <select id="deliverable-filter"><option value="all">All deliverables</option>${deliverables
+        .map((d) => `<option value="${d}" ${state.deliverableFilter === d ? "selected" : ""}>${d}</option>`)
+        .join("")}</select>
+      <div>
+        <button class="btn ${state.mode === "grid" ? "btn-primary" : "btn-muted"}" id="mode-grid">Grid</button>
+        <button class="btn ${state.mode === "list" ? "btn-primary" : "btn-muted"}" id="mode-list">List</button>
+      </div>
+    </section>
+
+    ${items.length ? `<section class="projects ${state.mode}">${cards}</section>` : `<p class="empty">No projects match the current filter.</p>`}
+  </main>`;
+
+  document.getElementById("new-project").onclick = () => {
+    state.detailDraft = {
+      project_name: "new project",
+      description: "",
+      deliverable_type: "custom",
+      done_condition: "",
+      tags: [],
+      icon_mode: "automatic",
+      icon_image: "",
+      status: "new",
+    };
+    state.view = "details";
+    state.error = "";
+    render();
+  };
+
+  document.getElementById("search").oninput = (e) => {
+    state.search = e.target.value;
+    renderDiscovery();
+  };
+  document.getElementById("sort").onchange = (e) => {
+    state.sort = e.target.value;
+    renderDiscovery();
+  };
+  document.getElementById("deliverable-filter").onchange = (e) => {
+    state.deliverableFilter = e.target.value;
+    renderDiscovery();
+  };
+  document.getElementById("mode-grid").onclick = () => {
+    state.mode = "grid";
+    renderDiscovery();
+  };
+  document.getElementById("mode-list").onclick = () => {
+    state.mode = "list";
+    renderDiscovery();
+  };
+
+  for (const card of document.querySelectorAll("[data-open-project]")) {
+    card.onclick = () => {
+      const slug = card.dataset.openProject;
+      state.currentProject = state.projects.find((p) => p.slug === slug) || null;
+      state.view = "project";
+      render();
+    };
+  }
+}
+
+function renderProjectPage() {
+  app.innerHTML = `<main class="page"><section class="panel"><h2>Project pages coming soon</h2><p>This placeholder confirms navigation for project <strong>${escapeHtml(
+    state.currentProject?.project_name || ""
+  )}</strong>.</p><button class="btn btn-primary" id="back-main">Back to discovery</button></section></main>`;
+  document.getElementById("back-main").onclick = () => {
+    state.view = "discovery";
+    render();
+  };
+}
+
+function renderDetailsPage() {
+  const d = state.detailDraft;
+  app.innerHTML = `<main class="page"><section class="panel">
+    <h2>Project Details</h2>
+    <p class="subtitle">Create and save details used for the project thumbnail and discovery list.</p>
+    ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+    <div class="form-grid">
+      <label class="field wide">Project Name <input id="project_name" value="${escapeHtml(d.project_name)}" /></label>
+      <label class="field wide">Description <textarea id="description" rows="2">${escapeHtml(d.description)}</textarea></label>
+      <label class="field">Deliverable Type <select id="deliverable_type">${deliverables
+        .map((value) => `<option value="${value}" ${d.deliverable_type === value ? "selected" : ""}>${value}</option>`)
+        .join("")}</select></label>
+      <label class="field">Current Status <input value="${escapeHtml(d.status)}" disabled /><span class="help">Status is displayed here and updated elsewhere.</span></label>
+      <label class="field wide">Done Condition <textarea id="done_condition" rows="2">${escapeHtml(d.done_condition)}</textarea></label>
+      <label class="field">Tags (comma separated)<input id="tags" value="${escapeHtml((d.tags || []).join(", "))}"/></label>
+      <label class="field">Tag Suggestions<select id="tag_pick"><option value="">Select a tag to add</option>${suggestedTags
+        .map((tag) => `<option value="${tag}">${tag}</option>`)
+        .join("")}</select></label>
+      <label class="field">Icon Mode <select id="icon_mode"><option value="automatic" ${d.icon_mode === "automatic" ? "selected" : ""}>automatic</option><option value="custom" ${
+    d.icon_mode === "custom" ? "selected" : ""
+  }>custom</option></select></label>
+      <label class="field">Icon Image ID <input id="icon_image" value="${escapeHtml(d.icon_image)}" /></label>
+    </div>
+    <div class="actions"><button class="btn btn-muted" id="cancel">Cancel</button><button class="btn btn-primary" id="save">Save</button></div>
+  </section></main>`;
+
+  const bind = (id, prop) => {
+    document.getElementById(id).oninput = (e) => (state.detailDraft[prop] = e.target.value);
+    document.getElementById(id).onchange = (e) => (state.detailDraft[prop] = e.target.value);
+  };
+  bind("project_name", "project_name");
+  bind("description", "description");
+  bind("deliverable_type", "deliverable_type");
+  bind("done_condition", "done_condition");
+  bind("icon_mode", "icon_mode");
+  bind("icon_image", "icon_image");
+
+  document.getElementById("tags").oninput = (e) => {
+    state.detailDraft.tags = e.target.value
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+  };
+
+  document.getElementById("tag_pick").onchange = (e) => {
+    const value = e.target.value;
+    if (!value) return;
+    const tagSet = new Set([...(state.detailDraft.tags || []), value]);
+    state.detailDraft.tags = [...tagSet];
+    document.getElementById("tags").value = state.detailDraft.tags.join(", ");
+    e.target.value = "";
+  };
+
+  document.getElementById("cancel").onclick = () => {
+    state.view = "discovery";
+    state.error = "";
+    render();
+  };
+
+  document.getElementById("save").onclick = async () => {
+    state.error = "";
+    const payload = { ...state.detailDraft };
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      state.error = body.error || "Unable to save project.";
+      renderDetailsPage();
+      return;
+    }
+    await loadProjects();
+    state.view = "discovery";
+    state.detailDraft = null;
+    render();
+  };
+}
+
+function render() {
+  if (state.view === "details") return renderDetailsPage();
+  if (state.view === "project") return renderProjectPage();
+  return renderDiscovery();
+}
+
+(async () => {
+  await loadProjects();
+  render();
+})();
