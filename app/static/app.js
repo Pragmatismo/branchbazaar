@@ -436,9 +436,13 @@ function renderNodeTool(node) {
     const toolState = getNodeToolState(node);
     if (typeof toolState.showIncluded !== "boolean") toolState.showIncluded = false;
     if (typeof toolState.showExcluded !== "boolean") toolState.showExcluded = false;
+    if (toolState.imageSetDisplayMode !== "all") toolState.imageSetDisplayMode = "single";
+    if (typeof toolState.imageSetAllPage !== "number" || Number.isNaN(toolState.imageSetAllPage)) toolState.imageSetAllPage = 1;
     const visibleStates = [];
     if (toolState.showIncluded) visibleStates.push("included");
     if (toolState.showExcluded) visibleStates.push("excluded");
+    const isAllMode = toolState.imageSetDisplayMode === "all";
+    const allModePageSize = 20;
     const visibleImages =
       node.image_set_type === "choice group"
         ? images.filter((item) => item.state === "pending" || visibleStates.includes(item.state))
@@ -452,7 +456,11 @@ function renderNodeTool(node) {
     const listHtml = visibleImages
       .map((item, idx) => {
         const sourceIndex = images.findIndex((candidate) => candidate.id === item.id);
-        return `<button class="image-set-item ${sourceIndex === node.image_set_selected_index ? "selected" : ""}" data-image-set-select="${sourceIndex}">${escapeHtml(item.name || `Image ${idx + 1}`)} <span class="image-set-state">${escapeHtml(item.state)}</span></button>`;
+        const stateTag =
+          node.image_set_type === "choice group"
+            ? `<span class="image-set-state state-${escapeHtml(item.state)}">${escapeHtml(item.state)}</span>`
+            : "";
+        return `<button class="image-set-item ${sourceIndex === node.image_set_selected_index ? "selected" : ""}" data-image-set-select="${sourceIndex}">${escapeHtml(item.name || `Image ${idx + 1}`)}${stateTag}</button>`;
       })
       .join("");
     const stars = Array.from({ length: 10 }, (_, i) => {
@@ -471,10 +479,21 @@ function renderNodeTool(node) {
         ? `<button class="btn btn-primary" id="image-set-include" ${displayImage ? "" : "disabled"}>Include Image</button><button class="btn btn-muted" id="image-set-exclude" ${displayImage ? "" : "disabled"}>Exclude Image</button>`
         : "";
     const previewStateClass = displayImage?.state === "included" ? "image-preview-wrap state-included" : displayImage?.state === "excluded" ? "image-preview-wrap state-excluded" : "image-preview-wrap";
+    const totalPages = Math.max(1, Math.ceil(visibleImages.length / allModePageSize));
+    toolState.imageSetAllPage = Math.max(1, Math.min(toolState.imageSetAllPage, totalPages));
+    const pageStart = (toolState.imageSetAllPage - 1) * allModePageSize;
+    const pagedImages = visibleImages.slice(pageStart, pageStart + allModePageSize);
+    const allModeList = pagedImages
+      .map((item, idx) => {
+        const imageSrc = imageSetDisplayUrl(item);
+        return `<div class="image-set-all-item"><div class="image-set-all-title">${escapeHtml(item.name || `Image ${pageStart + idx + 1}`)}</div>${imageSrc ? `<img class="image-preview" src="${imageSrc}" alt="${escapeHtml(item.name || `Image ${pageStart + idx + 1}`)}" />` : '<div class="image-placeholder">No image selected</div>'}</div>`;
+      })
+      .join("");
+    const allModePager = `<div class="image-set-all-pager"><button class="btn btn-muted" id="image-set-all-prev" ${toolState.imageSetAllPage > 1 ? "" : "disabled"}>Previous</button><input class="image-set-page-input" id="image-set-all-page" type="number" min="1" max="${totalPages}" value="${toolState.imageSetAllPage}" /><span class="image-set-page-total">/ ${totalPages}</span><button class="btn btn-muted" id="image-set-all-next" ${toolState.imageSetAllPage < totalPages ? "" : "disabled"}>Next</button></div>`;
     return `<div class="node-tool image-tool image-set-tool">
-      <div class="image-set-nav"><button class="btn btn-muted" id="image-set-prev" ${visibleImages.length ? "" : "disabled"}>Previous</button><button class="btn btn-muted" id="image-set-next" ${visibleImages.length ? "" : "disabled"}>Next</button>${showControls}</div>
-      <div class="${previewStateClass}">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Image set selection" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
-      <div class="image-set-meta">
+      <div class="image-set-nav"><div class="image-set-nav-left">${isAllMode ? "" : `<button class="btn btn-muted" id="image-set-prev" ${visibleImages.length ? "" : "disabled"}>Previous</button><button class="btn btn-muted" id="image-set-next" ${visibleImages.length ? "" : "disabled"}>Next</button>`}${showControls}</div><div class="image-set-display-toggle"><span>Display:</span><button class="btn btn-muted" id="image-set-display-toggle">${isAllMode ? "all" : "single"}</button></div></div>
+      ${isAllMode ? `<div class="image-set-all-list">${allModeList || '<div class="image-placeholder">No images to show</div>'}</div>${allModePager}` : `<div class="${previewStateClass}">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Image set selection" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>`}
+      <div class="image-set-meta ${isAllMode ? "hidden" : ""}">
         <div class="image-set-rating-wrap"><div class="image-set-rating">${stars}</div>${modeButtons}</div>
         <textarea id="image-set-notes" rows="3" placeholder="Notes for selected image" ${displayImage ? "" : "disabled"}>${escapeHtml(displayImage?.notes || "")}</textarea>
       </div>
@@ -483,7 +502,7 @@ function renderNodeTool(node) {
         <button class="btn btn-muted" id="image-set-remove" ${displayImage ? "" : "disabled"}>Remove Selected</button>
         <input id="image-set-file" type="file" accept="image/*" multiple class="hidden" />
       </div>
-      <div class="image-set-list">${listHtml || '<div class="image-placeholder">No images to show</div>'}</div>
+      <div class="image-set-list ${isAllMode ? "hidden" : ""}">${listHtml || '<div class="image-placeholder">No images to show</div>'}</div>
     </div>`;
   }
   if (type === "video") {
@@ -670,6 +689,10 @@ function bindNodeToolEvents(node) {
     const notes = document.getElementById("image-set-notes");
     const showIncluded = document.getElementById("image-set-show-included");
     const showExcluded = document.getElementById("image-set-show-excluded");
+    const displayToggleBtn = document.getElementById("image-set-display-toggle");
+    const allPrevBtn = document.getElementById("image-set-all-prev");
+    const allNextBtn = document.getElementById("image-set-all-next");
+    const allPageInput = document.getElementById("image-set-all-page");
 
     for (const el of document.querySelectorAll("[data-image-set-select]")) {
       el.onclick = () => {
@@ -686,6 +709,35 @@ function bindNodeToolEvents(node) {
       moveToNextVisible(1);
       renderProjectPage();
     };
+
+    if (displayToggleBtn) displayToggleBtn.onclick = () => {
+      toolState.imageSetDisplayMode = toolState.imageSetDisplayMode === "all" ? "single" : "all";
+      renderProjectPage();
+    };
+
+    if (allPrevBtn) allPrevBtn.onclick = () => {
+      toolState.imageSetAllPage = Math.max(1, (Number(toolState.imageSetAllPage) || 1) - 1);
+      renderProjectPage();
+    };
+    if (allNextBtn) allNextBtn.onclick = () => {
+      toolState.imageSetAllPage = (Number(toolState.imageSetAllPage) || 1) + 1;
+      renderProjectPage();
+    };
+    if (allPageInput) {
+      const commitPage = () => {
+        const max = Number(allPageInput.max) || 1;
+        const value = Math.max(1, Math.min(max, Number(allPageInput.value) || 1));
+        toolState.imageSetAllPage = value;
+        renderProjectPage();
+      };
+      allPageInput.onchange = commitPage;
+      allPageInput.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commitPage();
+        }
+      };
+    }
 
     if (showIncluded) showIncluded.onchange = () => {
       toolState.showIncluded = showIncluded.checked;
