@@ -282,3 +282,29 @@ input, textarea, select {
   display: block;
   background: #000;
 }
+
+.file-tool { display: grid; gap: 10px; align-content: start; }
+.file-tool-select-row { display: flex; gap: 8px; }
+.file-tool-link-row { display: flex; gap: 8px; align-items: center; }
+.file-tool-path {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+.file-tool-info-box {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+  color: #1f2937;
+}
+.file-tool-info-empty { color: #64748b; }

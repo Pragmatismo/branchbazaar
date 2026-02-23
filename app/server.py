@@ -26,9 +26,9 @@ NODE_TYPES = {"component", "choice", "tool"}
 def available_component_modules() -> list[str]:
     components_dir = STATIC_DIR / "components"
     if not components_dir.exists():
-        return ["text", "image", "image set", "video"]
+        return ["text", "image", "image set", "video", "file"]
     names = sorted({path.stem.replace("_", " ") for path in components_dir.glob("*.js") if path.is_file() and not path.stem.startswith("_")})
-    return names or ["text", "image", "image set", "video"]
+    return names or ["text", "image", "image set", "video", "file"]
 
 
 @dataclass
@@ -287,6 +287,11 @@ def normalize_node_schema(node: dict[str, Any]) -> dict[str, Any]:
         settings.setdefault("image_set_images", normalized.get("image_set_images", []))
         settings.setdefault("image_set_primary_id", normalized.get("image_set_primary_id", ""))
         settings.setdefault("image_set_selected_index", normalized.get("image_set_selected_index", -1))
+    if sub_type == "file":
+        settings.setdefault("file_path", normalized.get("file_path", ""))
+        settings.setdefault("file_name", normalized.get("file_name", ""))
+        settings.setdefault("file_size", normalized.get("file_size", 0))
+        settings.setdefault("file_notes", normalized.get("file_notes", ""))
     normalized["node_settings"] = settings
     normalized["children"] = [normalize_node_schema(child) for child in normalized.get("children", []) if isinstance(child, dict)]
     return normalized
@@ -418,6 +423,29 @@ def save_node_image(slug: str, node_id: str, filename: str, data_url: str) -> st
     return f"files/{target_name}"
 
 
+def file_extension_from_name(filename: str, mime: str) -> str:
+    candidate = Path(filename or "").suffix.lower()
+    if candidate:
+        return candidate
+    guessed = mimetypes.guess_extension(mime) or ".bin"
+    return ".bin" if guessed == ".ksh" else guessed
+
+
+def save_node_file(slug: str, node_id: str, filename: str, data_url: str) -> tuple[str, str, int] | None:
+    parsed = parse_data_url(data_url)
+    if not parsed:
+        return None
+    payload, mime = parsed
+    ext = file_extension_from_name(filename, mime)
+    original_name = Path(filename or "upload").name or "upload"
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", Path(original_name).stem).strip("._") or "file"
+    target_name = f"{node_id}_{safe_name}{ext}"
+    files_dir = node_files_dir(slug)
+    files_dir.mkdir(parents=True, exist_ok=True)
+    (files_dir / target_name).write_bytes(payload)
+    return f"files/{target_name}", original_name, len(payload)
+
+
 def local_dev_version() -> str:
     try:
         count = subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=ROOT, text=True).strip()
@@ -517,6 +545,33 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid image payload"})
                 return
             self._json(HTTPStatus.CREATED, {"file_path": file_path, "asset_url": f"/assets/{slug}/{file_path}"})
+            return
+        if parsed.path == "/api/project-node-file":
+            payload = self._read_json_body()
+            if payload is None:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
+                return
+            slug = str(payload.get("slug", "")).strip()
+            node_id = str(payload.get("node_id", "")).strip()
+            filename = str(payload.get("filename", "upload"))
+            data_url = str(payload.get("data_url", ""))
+            if not slug or not node_id or not data_url:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "slug, node_id and data_url are required"})
+                return
+            saved = save_node_file(slug, node_id, filename, data_url)
+            if not saved:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "Invalid file payload"})
+                return
+            file_path, file_name, file_size = saved
+            self._json(
+                HTTPStatus.CREATED,
+                {
+                    "file_path": file_path,
+                    "asset_url": f"/assets/{slug}/{file_path}",
+                    "file_name": file_name,
+                    "file_size": file_size,
+                },
+            )
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
 
