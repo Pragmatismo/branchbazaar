@@ -1300,12 +1300,20 @@ function renderDetailsPage() {
       </div>`)
       .join("");
 
+    const updateSelectedDeliverableStyles = () => {
+      for (const itemEl of list.querySelectorAll(".deliverable-item")) {
+        const idx = Number(itemEl.dataset.deliverableIndex);
+        itemEl.classList.toggle("selected", idx === state.detailDraft.selectedDeliverableIndex);
+      }
+    };
+
     for (const el of list.querySelectorAll(".deliverable-item")) {
       el.onclick = (e) => {
+        if (e.target.closest("input, textarea, select")) return;
         const idx = Number(e.currentTarget.dataset.deliverableIndex);
         if (Number.isNaN(idx)) return;
         state.detailDraft.selectedDeliverableIndex = idx;
-        renderDeliverables();
+        updateSelectedDeliverableStyles();
       };
     }
 
@@ -1316,6 +1324,12 @@ function renderDetailsPage() {
         const key = e.target.dataset.deliverableField;
         state.detailDraft.deliverables[idx][key] = e.target.value;
         state.detailDraft.deliverable_type = state.detailDraft.deliverables[0].type;
+      });
+      field.addEventListener("focus", (e) => {
+        const idx = Number(e.target.dataset.deliverableIndex);
+        if (Number.isNaN(idx)) return;
+        state.detailDraft.selectedDeliverableIndex = idx;
+        updateSelectedDeliverableStyles();
       });
     }
   };
