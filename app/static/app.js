@@ -136,11 +136,15 @@ function nextDuplicateName(name, siblingNames) {
 
 function getNodeDisplayType(node) {
   if (!node) return "";
-  if (node.node_type === "component") {
+  const normalizedNodeType = typeof node.node_type === "string" ? node.node_type.trim().toLowerCase() : "";
+  if (normalizedNodeType === "component") {
     const componentType = typeof node.component_type === "string" ? node.component_type.trim().toLowerCase() : "";
     return componentType || "text";
   }
-  return typeof node.node_type === "string" ? node.node_type.trim().toLowerCase() : "";
+  if (normalizedNodeType === "video") {
+    return "video";
+  }
+  return normalizedNodeType;
 }
 
 function ensureTextHistory(node) {
@@ -1096,12 +1100,12 @@ function renderProjectPage() {
     };
     const nodeType = document.getElementById("node-type");
     if (nodeType) nodeType.onchange = async (e) => {
-      selectedNode.node_type = e.target.value;
+      selectedNode.node_type = String(e.target.value || "").trim().toLowerCase();
       await applyAndSave();
     };
     const componentType = document.getElementById("component-type");
     if (componentType) componentType.onchange = async (e) => {
-      selectedNode.component_type = e.target.value;
+      selectedNode.component_type = String(e.target.value || "").trim().toLowerCase();
       if (selectedNode.component_type === "image set") {
         ensureImageSetState(selectedNode);
         updateImageSetStatus(selectedNode);

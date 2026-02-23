@@ -5,6 +5,7 @@ import base64
 import json
 import mimetypes
 import re
+import subprocess
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -373,6 +374,16 @@ def save_node_image(slug: str, node_id: str, filename: str, data_url: str) -> st
     return f"files/{target_name}"
 
 
+def local_dev_version() -> str:
+    try:
+        count = subprocess.check_output(["git", "rev-list", "--count", "HEAD"], cwd=ROOT, text=True).strip()
+        if count.isdigit():
+            return f"Development Version Alpha.{count}"
+    except Exception:
+        pass
+    return "Development Version Alpha.unknown"
+
+
 class BranchBazaarHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(STATIC_DIR), **kwargs)
@@ -499,6 +510,7 @@ def main() -> int:
     host, port = "0.0.0.0", 8080
     with ThreadingHTTPServer((host, port), BranchBazaarHandler) as server:
         print(f"Branch Bazaar running at http://{host}:{port}")
+        print(local_dev_version())
         try:
             server.serve_forever()
         except KeyboardInterrupt:
