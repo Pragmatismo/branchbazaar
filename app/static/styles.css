@@ -264,5 +264,21 @@ input, textarea, select {
 .video-tool-link { flex: 1; min-width: 0; word-break: break-all; }
 .video-tool-embed-wrap { border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px; background: #f8fafc; display: grid; gap: 8px; }
 .video-tool-embed-header { display: flex; gap: 8px; align-items: center; }
-.video-tool-player { min-height: 240px; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; background: #fff; display: grid; place-items: center; }
-.video-tool-embed { width: 100%; min-height: 240px; border: 0; display: block; background: #000; }
+.video-tool-player {
+  min-height: 320px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+  display: grid;
+  place-items: center;
+}
+.video-tool-embed {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  display: block;
+  background: #000;
+}
