@@ -136,9 +136,15 @@ function nextDuplicateName(name, siblingNames) {
 
 function getNodeDisplayType(node) {
   if (!node) return "";
-  const normalizedNodeType = typeof node.node_type === "string" ? node.node_type.trim().toLowerCase() : "";
+  const normalizeType = (value) => {
+    const compact = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s_-]+/g, " ") : "";
+    if (compact === "imageset") return "image set";
+    if (compact === "videos") return "video";
+    return compact;
+  };
+  const normalizedNodeType = normalizeType(node.node_type);
   if (normalizedNodeType === "component") {
-    const componentType = typeof node.component_type === "string" ? node.component_type.trim().toLowerCase() : "";
+    const componentType = normalizeType(node.component_type);
     return componentType || "text";
   }
   if (normalizedNodeType === "video") {
