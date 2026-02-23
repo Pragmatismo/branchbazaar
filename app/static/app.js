@@ -11,10 +11,11 @@ const state = {
   error: "",
   projectStructures: {},
   projectUi: null,
+  componentModules: [],
 };
 
 const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
-const deliverableTypes = ["image", "image set", "video", "software", "guide", "design", "product", "custom"];
+const fallbackComponentTypes = ["text", "image", "image set", "video"];
 
 const app = document.getElementById("app");
 
@@ -24,6 +25,23 @@ function escapeHtml(text) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+
+async function loadComponentModules() {
+  try {
+    const res = await fetch('/api/component-modules');
+    if (!res.ok) throw new Error('Failed to load component modules');
+    const data = await res.json();
+    const modules = Array.isArray(data.components) ? data.components : [];
+    state.componentModules = modules.length ? modules : [...fallbackComponentTypes];
+  } catch {
+    state.componentModules = [...fallbackComponentTypes];
+  }
+}
+
+function availableComponentTypes() {
+  return state.componentModules?.length ? state.componentModules : fallbackComponentTypes;
 }
 
 async function loadProjects() {
@@ -41,7 +59,7 @@ function filteredProjects() {
     );
   }
   if (state.deliverableFilter !== "all") {
-    items = items.filter((p) => p.deliverable_type === state.deliverableFilter);
+    items = items.filter((p) => (p.deliverable_type || p.deliverables?.[0]?.type) === state.deliverableFilter);
   }
   if (state.statusFilter !== "all") {
     items = items.filter((p) => p.status === state.statusFilter);
@@ -78,12 +96,15 @@ async function loadProjectStructure(slug) {
   if (!res.ok) return;
   const data = await res.json();
   if (!state.projectStructures) state.projectStructures = {};
-  state.projectStructures[slug] = { nodes: Array.isArray(data.nodes) ? data.nodes : [] };
+  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+  normalizeStructureNodes(nodes);
+  state.projectStructures[slug] = { nodes };
 }
 
 async function persistProjectStructure() {
   if (!state.currentProject) return;
   ensureStructureLoaded();
+  normalizeStructureNodes(state.projectStructures[state.currentProject.slug].nodes);
   await fetch(`/api/project-structure?slug=${encodeURIComponent(state.currentProject.slug)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -144,13 +165,60 @@ function getNodeDisplayType(node) {
   };
   const normalizedNodeType = normalizeType(node.node_type);
   if (normalizedNodeType === "component") {
-    const componentType = normalizeType(node.component_type);
+    const componentType = normalizeType(node.sub_type || node.sub_type);
     return componentType || "text";
   }
-  if (normalizedNodeType === "video") {
-    return "video";
-  }
   return normalizedNodeType;
+}
+
+function isBlankSettings(settings) {
+  if (!settings || typeof settings !== "object") return true;
+  return Object.values(settings).every((value) => {
+    if (value === "") return true;
+    if (Array.isArray(value)) return value.length === 0;
+    return value === null || value === false;
+  });
+}
+
+function normalizeNodeSchema(node) {
+  if (!node || typeof node !== "object") return;
+  node.node_type = ["component", "choice", "tool"].includes(node.node_type) ? node.node_type : "component";
+  node.sub_type = String(node.sub_type || node.sub_type || "text").trim().toLowerCase();
+  if (!node.node_settings || typeof node.node_settings !== "object") node.node_settings = {};
+  if (node.sub_type === "video") {
+    node.video_url = node.video_url ?? node.node_settings.video_url ?? "";
+    node.video_notes = node.video_notes ?? node.node_settings.video_notes ?? "";
+    node.node_settings.video_url = node.video_url;
+    node.node_settings.video_notes = node.video_notes;
+  }
+  if (node.sub_type === "image") {
+    node.file_path = node.file_path ?? node.node_settings.file_path ?? "";
+    node.image_url = node.image_url ?? node.node_settings.image_url ?? "";
+    node.image_notes = node.image_notes ?? node.node_settings.image_notes ?? "";
+    node.node_settings.file_path = node.file_path;
+    node.node_settings.image_url = node.image_url;
+    node.node_settings.image_notes = node.image_notes;
+  }
+  if (node.sub_type === "text") {
+    node.content_history = node.content_history ?? node.node_settings.content_history ?? [];
+    node.node_settings.content_history = node.content_history;
+  }
+  if (node.sub_type === "image set") {
+    node.image_set_type = node.image_set_type ?? node.node_settings.image_set_type ?? "collection";
+    node.image_set_images = node.image_set_images ?? node.node_settings.image_set_images ?? [];
+    node.image_set_primary_id = node.image_set_primary_id ?? node.node_settings.image_set_primary_id ?? "";
+    node.image_set_selected_index = node.image_set_selected_index ?? node.node_settings.image_set_selected_index ?? -1;
+    node.node_settings.image_set_type = node.image_set_type;
+    node.node_settings.image_set_images = node.image_set_images;
+    node.node_settings.image_set_primary_id = node.image_set_primary_id;
+    node.node_settings.image_set_selected_index = node.image_set_selected_index;
+  }
+  node.children = Array.isArray(node.children) ? node.children : [];
+  node.children.forEach(normalizeNodeSchema);
+}
+
+function normalizeStructureNodes(nodes) {
+  for (const node of nodes || []) normalizeNodeSchema(node);
 }
 
 function ensureTextHistory(node) {
@@ -269,7 +337,7 @@ function buildImageSetChildNode(parentNode, name, images) {
     name,
     description: "",
     node_type: "component",
-    component_type: "image set",
+    sub_type: "image set",
     choice_between_components: false,
     status: "done",
     lock_subnodes: true,
@@ -286,7 +354,7 @@ function buildImageSetChildNode(parentNode, name, images) {
 function ensureUnusedImagesChildNode(node, images) {
   if (!images.length) return;
   node.children = node.children || [];
-  const existing = node.children.find((child) => child.name === "unused images" && child.component_type === "image set");
+  const existing = node.children.find((child) => child.name === "unused images" && child.sub_type === "image set");
   if (existing) {
     ensureImageSetState(existing);
     existing.image_set_type = "collection";
@@ -305,7 +373,7 @@ function finalizeChoiceBestNode(node) {
   if (!selected) return;
   const unused = images.filter((item) => item.id !== selected.id);
   ensureUnusedImagesChildNode(node, unused);
-  node.component_type = "image";
+  node.sub_type = "image";
   node.file_path = selected.file_path || "";
   node.image_url = selected.image_url || "";
   node.image_notes = selected.notes || "";
@@ -587,7 +655,7 @@ function bindNodeToolEvents(node) {
     };
     const saveAndRender = async () => {
       maybeFinalizeChoiceGroup();
-      if (node.component_type === "image set") updateImageSetStatus(node);
+      if (node.sub_type === "image set") updateImageSetStatus(node);
       await persistProjectStructure();
       renderProjectPage();
     };
@@ -834,7 +902,7 @@ function renderDiscovery() {
     <section class="tools">
       <input id="search" placeholder="Search projects or tags" value="${escapeHtml(state.search)}" />
       <select id="sort"><option value="updated" ${state.sort === "updated" ? "selected" : ""}>Sort: Updated</option><option value="name" ${state.sort === "name" ? "selected" : ""}>Sort: Name</option></select>
-      <select id="deliverable-filter"><option value="all">All deliverables</option>${deliverableTypes
+      <select id="deliverable-filter"><option value="all">All deliverables</option>${availableComponentTypes()
         .map((d) => `<option value="${d}" ${state.deliverableFilter === d ? "selected" : ""}>${d}</option>`)
         .join("")}</select>
       <div>
@@ -850,8 +918,8 @@ function renderDiscovery() {
     state.detailDraft = {
       project_name: "new project",
       description: "",
-      deliverable_type: "custom",
-      deliverables: [{ name: "", description: "", type: "custom", link: "" }],
+      deliverable_type: "text",
+      deliverables: [{ name: "", description: "", type: "text", link: "" }],
       done_condition: "",
       tags: [],
       icon_mode: "automatic",
@@ -970,9 +1038,9 @@ function renderProjectPage() {
           <label class="field">Name <input id="node-name" value="${escapeHtml(selectedNode.name || "")}" ${selectedNode.immutable_name ? "disabled" : ""} /></label>
           <label class="field">Description <textarea id="node-description" rows="2">${escapeHtml(selectedNode.description || "")}</textarea></label>
           <label class="field">Node Type <select id="node-type"><option value="component" ${selectedNode.node_type === "component" ? "selected" : ""}>component</option><option value="choice" ${selectedNode.node_type === "choice" ? "selected" : ""}>choice</option><option value="tool" ${selectedNode.node_type === "tool" ? "selected" : ""}>tool</option></select></label>
-          <label class="field ${selectedNode.node_type === "component" ? "" : "hidden"}">Component Type <select id="component-type"><option value="image" ${selectedNode.component_type === "image" ? "selected" : ""}>image</option><option value="video" ${selectedNode.component_type === "video" ? "selected" : ""}>video</option><option value="text" ${selectedNode.component_type === "text" ? "selected" : ""}>text</option><option value="link" ${selectedNode.component_type === "link" ? "selected" : ""}>link</option><option value="file" ${selectedNode.component_type === "file" ? "selected" : ""}>file</option><option value="image set" ${selectedNode.component_type === "image set" ? "selected" : ""}>image set</option></select></label>
+          <label class="field ${selectedNode.node_type === "component" ? "" : "hidden"}">Component Type <select id="component-type">${availableComponentTypes().map((value) => `<option value="${value}" ${selectedNode.sub_type === value ? "selected" : ""}>${value}</option>`).join("")}</select>${availableComponentTypes().includes(selectedNode.sub_type) ? "" : `<div class="field-help">component module: ${escapeHtml(selectedNode.sub_type)} not found</div>`}</label>
           <label class="field ${selectedNode.node_type === "choice" ? "" : "hidden"}"><input type="checkbox" id="choice-between" ${selectedNode.choice_between_components ? "checked" : ""} /> between components</label>
-          <label class="field ${selectedNode.node_type === "component" && selectedNode.component_type === "image set" ? "" : "hidden"}">Image Set Type <select id="image-set-type">${imageSetTypes
+          <label class="field ${selectedNode.node_type === "component" && selectedNode.sub_type === "image set" ? "" : "hidden"}">Image Set Type <select id="image-set-type">${imageSetTypes
             .map((value) => `<option value="${value}" ${selectedNode.image_set_type === value ? "selected" : ""}>${value}</option>`)
             .join("")}</select></label>
         </div>` : ""}
@@ -1023,7 +1091,7 @@ function renderProjectPage() {
   document.getElementById("add-node").onclick = async () => {
     if (!selectedNode || selectedNode.lock_subnodes) return;
     selectedNode.children = selectedNode.children || [];
-    const newNode = { id: uid(), parent_id: selectedNode.id, name: "", description: "", node_type: "component", component_type: "text", choice_between_components: false, status: "new", lock_subnodes: false, notes: "", discussion: [], children: [], image_set_type: "collection", image_set_images: [], image_set_primary_id: "", image_set_selected_index: -1 };
+    const newNode = { id: uid(), parent_id: selectedNode.id, name: "", description: "", node_type: "component", sub_type: "text", node_settings: {}, choice_between_components: false, status: "new", lock_subnodes: false, notes: "", discussion: [], children: [] }; normalizeNodeSchema(newNode);
     selectedNode.children.push(newNode);
     state.projectUi.selectedNodeId = newNode.id;
     state.projectUi.editorOpen = true;
@@ -1111,8 +1179,17 @@ function renderProjectPage() {
     };
     const componentType = document.getElementById("component-type");
     if (componentType) componentType.onchange = async (e) => {
-      selectedNode.component_type = String(e.target.value || "").trim().toLowerCase();
-      if (selectedNode.component_type === "image set") {
+      const nextType = String(e.target.value || "").trim().toLowerCase();
+      if (nextType === selectedNode.sub_type) return;
+      const hasData = !isBlankSettings(selectedNode.node_settings);
+      if (hasData && !window.confirm("Warning: changing component type will remove existing component data for this node.")) {
+        renderProjectPage();
+        return;
+      }
+      selectedNode.sub_type = nextType;
+      selectedNode.node_settings = {};
+      normalizeNodeSchema(selectedNode);
+      if (selectedNode.sub_type === "image set") {
         ensureImageSetState(selectedNode);
         updateImageSetStatus(selectedNode);
       }
@@ -1150,7 +1227,7 @@ function renderProjectPage() {
 function renderDetailsPage() {
   const d = state.detailDraft;
   if (!Array.isArray(d.deliverables) || !d.deliverables.length) {
-    d.deliverables = [{ name: "", description: "", type: d.deliverable_type || "custom", link: "" }];
+    d.deliverables = [{ name: "", description: "", type: d.deliverable_type || "text", link: "" }];
   }
   app.innerHTML = `<main class="page"><section class="panel">
     <h2>Project Details</h2>
@@ -1195,12 +1272,12 @@ function renderDetailsPage() {
 
   const normalizeDeliverables = () => {
     if (!Array.isArray(state.detailDraft.deliverables) || !state.detailDraft.deliverables.length) {
-      state.detailDraft.deliverables = [{ name: "", description: "", type: "custom", link: "" }];
+      state.detailDraft.deliverables = [{ name: "", description: "", type: "text", link: "" }];
     }
     state.detailDraft.deliverables = state.detailDraft.deliverables.map((item) => ({
       name: item?.name || "",
       description: item?.description || "",
-      type: deliverableTypes.includes(item?.type) ? item.type : "custom",
+      type: availableComponentTypes().includes(item?.type) ? item.type : "text",
       link: item?.link || "",
     }));
     state.detailDraft.selectedDeliverableIndex = Math.min(
@@ -1217,7 +1294,7 @@ function renderDetailsPage() {
       .map((item, index) => `<div class="deliverable-item ${index === state.detailDraft.selectedDeliverableIndex ? "selected" : ""}" data-deliverable-index="${index}">
         <label class="field">Name <input data-deliverable-field="name" data-deliverable-index="${index}" value="${escapeHtml(item.name)}" /></label>
         <label class="field">Description <textarea rows="2" data-deliverable-field="description" data-deliverable-index="${index}">${escapeHtml(item.description)}</textarea></label>
-        <label class="field">Type <select data-deliverable-field="type" data-deliverable-index="${index}">${deliverableTypes
+        <label class="field">Type <select data-deliverable-field="type" data-deliverable-index="${index}">${availableComponentTypes()
           .map((value) => `<option value="${value}" ${item.type === value ? "selected" : ""}>${value}</option>`)
           .join("")}</select></label>
       </div>`)
@@ -1247,7 +1324,7 @@ function renderDetailsPage() {
   renderDeliverables();
 
   document.getElementById("add-deliverable").onclick = () => {
-    state.detailDraft.deliverables.push({ name: "", description: "", type: "custom", link: "" });
+    state.detailDraft.deliverables.push({ name: "", description: "", type: "text", link: "" });
     state.detailDraft.selectedDeliverableIndex = state.detailDraft.deliverables.length - 1;
     renderDeliverables();
   };
@@ -1319,6 +1396,7 @@ function render() {
 }
 
 (async () => {
+  await loadComponentModules();
   await loadProjects();
   if (!state.projectStructures) state.projectStructures = {};
   render();

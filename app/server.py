@@ -19,8 +19,16 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "app" / "static"
 PROJECTS_DIR = ROOT / "projects"
 
-DELIVERABLE_TYPES = ["image", "image set", "video", "software", "guide", "design", "product", "custom"]
 STATUSES = ["new", "active", "paused", "done", "archived"]
+NODE_TYPES = {"component", "choice", "tool"}
+
+
+def available_component_modules() -> list[str]:
+    components_dir = STATIC_DIR / "components"
+    if not components_dir.exists():
+        return ["text", "image", "image set", "video"]
+    names = sorted({path.stem.replace("_", " ") for path in components_dir.glob("*.js") if path.is_file() and not path.stem.startswith("_")})
+    return names or ["text", "image", "image set", "video"]
 
 
 @dataclass
@@ -155,22 +163,23 @@ def parse_project_payload(raw: dict[str, Any]) -> tuple[Project | None, str | No
         for item in raw_deliverables:
             if not isinstance(item, dict):
                 continue
-            deliverable_type = str(item.get("type", "custom")).strip().lower()
-            if deliverable_type not in DELIVERABLE_TYPES:
-                return None, "Deliverable Type is invalid."
+            deliverable_type = str(item.get("type") or item.get("component_type") or "text").strip().lower()
+            if deliverable_type not in available_component_modules():
+                return None, "Deliverable component type is invalid."
             deliverables.append(
                 {
                     "name": str(item.get("name", "")).strip(),
                     "description": str(item.get("description", "")).strip(),
                     "type": deliverable_type,
+                    "component_type": deliverable_type,
                     "link": str(item.get("link", "")).strip(),
                 }
             )
     if not deliverables:
-        legacy_deliverable = str(raw.get("deliverable_type", "custom")).strip().lower()
-        if legacy_deliverable not in DELIVERABLE_TYPES:
-            return None, "Deliverable Type is invalid."
-        deliverables = [{"name": "", "description": "", "type": legacy_deliverable, "link": ""}]
+        legacy_deliverable = str(raw.get("deliverable_type", "text")).strip().lower()
+        if legacy_deliverable not in available_component_modules():
+            legacy_deliverable = "text"
+        deliverables = [{"name": "", "description": "", "type": legacy_deliverable, "component_type": legacy_deliverable, "link": ""}]
 
     deliverable = deliverables[0]["type"]
     icon_mode = str(raw.get("icon_mode", "automatic")).strip().lower()
@@ -233,15 +242,15 @@ def save_project(payload: dict[str, Any], original_slug: str | None = None) -> t
     return result, None
 
 
-def default_node(name: str, parent_id: str | None = None) -> dict[str, Any]:
+def default_node(name: str, parent_id: str | None = None, sub_type: str = "text") -> dict[str, Any]:
     return {
         "id": str(uuid.uuid4()),
         "parent_id": parent_id,
         "name": name,
         "description": "",
         "node_type": "component",
-        "component_type": "text",
-        "choice_between_components": False,
+        "sub_type": sub_type,
+        "node_settings": {},
         "status": "new",
         "lock_subnodes": False,
         "notes": "",
@@ -250,13 +259,46 @@ def default_node(name: str, parent_id: str | None = None) -> dict[str, Any]:
     }
 
 
+def normalize_node_schema(node: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(node)
+    node_type = str(normalized.get("node_type", "component")).strip().lower()
+    if node_type not in NODE_TYPES:
+        node_type = "component"
+    normalized["node_type"] = node_type
+    sub_type = str(normalized.get("sub_type") or normalized.get("component_type") or "text").strip().lower()
+    normalized["sub_type"] = sub_type
+    settings = normalized.get("node_settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    if sub_type == "text":
+        if "content_history" in normalized and "content_history" not in settings:
+            settings["content_history"] = normalized.get("content_history")
+        if "content" in normalized and "content" not in settings:
+            settings["content"] = normalized.get("content")
+    if sub_type == "image":
+        settings.setdefault("file_path", normalized.get("file_path", ""))
+        settings.setdefault("image_url", normalized.get("image_url", ""))
+        settings.setdefault("image_notes", normalized.get("image_notes", ""))
+    if sub_type == "video":
+        settings.setdefault("video_url", normalized.get("video_url", ""))
+        settings.setdefault("video_notes", normalized.get("video_notes", ""))
+    if sub_type == "image set":
+        settings.setdefault("image_set_type", normalized.get("image_set_type", "collection"))
+        settings.setdefault("image_set_images", normalized.get("image_set_images", []))
+        settings.setdefault("image_set_primary_id", normalized.get("image_set_primary_id", ""))
+        settings.setdefault("image_set_selected_index", normalized.get("image_set_selected_index", -1))
+    normalized["node_settings"] = settings
+    normalized["children"] = [normalize_node_schema(child) for child in normalized.get("children", []) if isinstance(child, dict)]
+    return normalized
+
+
 def load_project_structure(slug: str) -> dict[str, Any]:
     base = PROJECTS_DIR / slug
     project = read_project(base / "project.json")
     if not project:
         return {"nodes": []}
 
-    desired_deliverables = project.deliverables or [{"name": "Deliverable", "type": project.deliverable_type}]
+    desired_deliverables = project.deliverables or [{"name": "Deliverable", "type": project.deliverable_type, "component_type": project.deliverable_type}]
     desired_names = [item.get("name", "").strip() or f"Deliverable {idx + 1}" for idx, item in enumerate(desired_deliverables)]
 
     index_path = project_nodes_index_path(slug)
@@ -276,7 +318,7 @@ def load_project_structure(slug: str) -> dict[str, Any]:
         if not node_path.exists():
             continue
         try:
-            existing_nodes[node_id] = json.loads(node_path.read_text(encoding="utf-8"))
+            existing_nodes[node_id] = normalize_node_schema(json.loads(node_path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             continue
 
@@ -294,7 +336,8 @@ def load_project_structure(slug: str) -> dict[str, Any]:
         if matched:
             node = existing_nodes.get(matched.get("id"))
         if not node:
-            node = default_node(deliverable_name)
+            deliverable_type = str(desired_deliverables[idx].get("component_type") or desired_deliverables[idx].get("type") or "text").strip().lower()
+            node = default_node(deliverable_name, sub_type=deliverable_type)
         node["name"] = deliverable_name
         node["immutable_name"] = True
         node["is_top_level"] = True
@@ -307,7 +350,7 @@ def load_project_structure(slug: str) -> dict[str, Any]:
     doc_entry = next((e for e in index_payload.get("top_level", []) if e.get("kind") == "documentation"), None)
     doc_node = existing_nodes.get(doc_entry.get("id")) if doc_entry else None
     if not doc_node:
-        doc_node = default_node("Documentation")
+        doc_node = default_node("Documentation", sub_type="text")
     doc_node["name"] = "Documentation"
     doc_node["immutable_name"] = True
     doc_node["is_top_level"] = True
@@ -332,6 +375,7 @@ def save_project_structure(slug: str, nodes: list[dict[str, Any]]) -> None:
         if not node.get("id"):
             node["id"] = str(uuid.uuid4())
         node_path = top_level_node_path(slug, node["id"])
+        node = normalize_node_schema(node)
         node_path.write_text(json.dumps(node, indent=2), encoding="utf-8")
         entry = {"id": node["id"], "kind": node.get("top_level_kind", "deliverable")}
         if node.get("top_level_kind") == "deliverable":
@@ -409,6 +453,9 @@ class BranchBazaarHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/projects":
             self._json(HTTPStatus.OK, {"projects": list_projects()})
+            return
+        if parsed.path == "/api/component-modules":
+            self._json(HTTPStatus.OK, {"components": available_component_modules()})
             return
         if parsed.path == "/api/project-structure":
             query = parse_qs(parsed.query)
