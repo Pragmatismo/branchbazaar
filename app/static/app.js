@@ -255,6 +255,7 @@ function finalizeChoiceBestNode(node) {
   node.component_type = "image";
   node.file_path = selected.file_path || "";
   node.image_url = selected.image_url || "";
+  node.image_notes = selected.notes || "";
   node.status = "done";
   node.lock_subnodes = true;
 }
@@ -300,6 +301,9 @@ function renderNodeTool(node) {
     const hasImage = !!imagePath;
     return `<div class="node-tool image-tool">
       <div class="image-preview-wrap">${hasImage ? `<img class="image-preview" src="${imagePath}" alt="Node image" />` : "<div class=\"image-placeholder\">No image selected</div>"}</div>
+      <div class="image-tool-meta">
+        <textarea id="image-tool-notes" rows="3" placeholder="Notes for selected image" ${hasImage ? "" : "disabled"}>${escapeHtml(node.image_notes || "")}</textarea>
+      </div>
       <div class="image-tool-actions">
         <button class="btn btn-primary" id="image-tool-upload">Upload</button>
         <input id="image-tool-file" type="file" accept="image/*" class="hidden" />
@@ -423,6 +427,22 @@ function bindNodeToolEvents(node) {
   if (type === "image") {
     const uploadBtn = document.getElementById("image-tool-upload");
     const input = document.getElementById("image-tool-file");
+    const notes = document.getElementById("image-tool-notes");
+    if (notes) {
+      const commit = async () => {
+        if ((node.image_notes || "") === notes.value) return;
+        node.image_notes = notes.value;
+        await persistProjectStructure();
+        renderProjectPage();
+      };
+      notes.onblur = commit;
+      notes.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          await commit();
+        }
+      };
+    }
     if (!uploadBtn || !input) return;
     uploadBtn.onclick = () => input.click();
     input.onchange = async () => {
