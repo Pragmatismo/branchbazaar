@@ -15,7 +15,7 @@ const state = {
 };
 
 const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
-const fallbackComponentTypes = ["text", "image", "image set", "video", "file"];
+const fallbackComponentTypes = ["text", "image", "image set", "video", "file", "brainstorm"];
 
 const app = document.getElementById("app");
 
@@ -223,6 +223,10 @@ function normalizeNodeSchema(node) {
     node.node_settings.file_size = node.file_size;
     node.node_settings.file_notes = node.file_notes;
   }
+  if (node.sub_type === "brainstorm") {
+    node.brainstorm_ideas = node.brainstorm_ideas ?? node.node_settings.brainstorm_ideas ?? [];
+    node.node_settings.brainstorm_ideas = node.brainstorm_ideas;
+  }
   node.children = Array.isArray(node.children) ? node.children : [];
   node.children.forEach(normalizeNodeSchema);
 }
@@ -240,6 +244,24 @@ function ensureTextHistory(node) {
     node.content_history.push({ edited_at: new Date().toISOString(), text: "" });
   }
   return node.content_history;
+}
+
+function ensureBrainstormState(node) {
+  if (!Array.isArray(node.brainstorm_ideas)) {
+    const legacyIdeas = Array.isArray(node.node_settings?.brainstorm_ideas) ? node.node_settings.brainstorm_ideas : [];
+    node.brainstorm_ideas = structuredClone(legacyIdeas);
+  }
+  node.brainstorm_ideas = node.brainstorm_ideas
+    .filter((idea) => idea && typeof idea === "object")
+    .map((idea) => ({
+      id: idea.id || uid(),
+      title: typeof idea.title === "string" ? idea.title : "",
+      rating: Number.isInteger(idea.rating) ? Math.max(0, Math.min(10, idea.rating)) : 0,
+      subideas: Array.isArray(idea.subideas) ? idea.subideas.filter((subidea) => typeof subidea === "string") : [],
+    }));
+  if (!node.node_settings || typeof node.node_settings !== "object") node.node_settings = {};
+  node.node_settings.brainstorm_ideas = node.brainstorm_ideas;
+  return node.brainstorm_ideas;
 }
 
 function formatEditedDate(value) {
@@ -573,6 +595,60 @@ function renderNodeTool(node) {
         <div><strong>Size:</strong> ${escapeHtml(formatFileSize(node.file_size || 0))}</div>
       </div>
       <textarea id="file-tool-notes" rows="3" placeholder="Notes for selected file" ${hasFile ? "" : "disabled"}>${escapeHtml(node.file_notes || "")}</textarea>
+    </div>`;
+  }
+  if (type === "brainstorm") {
+    const ideas = ensureBrainstormState(node);
+    const toolState = getNodeToolState(node);
+    if (!["static", "quality", "unseen"].includes(toolState.brainstormSort)) toolState.brainstormSort = "static";
+    const sortMode = toolState.brainstormSort;
+    const rankedIdeas = ideas.map((idea, index) => ({ idea, index }));
+    if (sortMode === "quality") {
+      rankedIdeas.sort((a, b) => {
+        const ratingA = Number(a.idea.rating) || 0;
+        const ratingB = Number(b.idea.rating) || 0;
+        if (ratingB !== ratingA) return ratingB - ratingA;
+        return a.index - b.index;
+      });
+    } else if (sortMode === "unseen") {
+      rankedIdeas.sort((a, b) => {
+        const unseenA = !(Number(a.idea.rating) > 0);
+        const unseenB = !(Number(b.idea.rating) > 0);
+        if (unseenA !== unseenB) return unseenA ? -1 : 1;
+        return a.index - b.index;
+      });
+    }
+    const rows = rankedIdeas
+      .map(({ idea, index }) => {
+        const rating = Number(idea.rating) || 0;
+        const stars = Array.from({ length: 10 }, (_, starIndex) => {
+          const value = starIndex + 1;
+          const on = rating >= value;
+          return `<button class="brainstorm-star ${on ? "on" : ""}" data-brainstorm-rate="${index}" data-brainstorm-rate-value="${value}">★</button>`;
+        }).join("");
+        const subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
+        const subideaInputs = subideas
+          .map(
+            (subidea, subIndex) =>
+              `<textarea class="brainstorm-subidea-input" data-brainstorm-subidea="${index}" data-brainstorm-subidea-index="${subIndex}" rows="1" placeholder="Add note or connected idea">${escapeHtml(subidea || "")}</textarea>`
+          )
+          .join("");
+        return `<div class="brainstorm-row" data-brainstorm-row="${index}">
+          <div class="brainstorm-main-col">
+            <input class="brainstorm-main-input" data-brainstorm-main="${index}" value="${escapeHtml(idea.title || "")}" placeholder="Main idea" />
+            <div class="brainstorm-rating">${stars}</div>
+          </div>
+          <div class="brainstorm-subideas-col">
+            ${subideaInputs}
+            <textarea class="brainstorm-subidea-input" data-brainstorm-subidea="${index}" data-brainstorm-subidea-index="${subideas.length}" rows="1" placeholder="Add note or connected idea"></textarea>
+          </div>
+        </div>`;
+      })
+      .join("");
+    return `<div class="node-tool brainstorm-tool">
+      <div class="brainstorm-top-bar"><span class="brainstorm-sort-label">sort:</span><button class="btn btn-muted" id="brainstorm-sort-toggle">${sortMode}</button></div>
+      <div class="brainstorm-rows">${rows}</div>
+      <input class="brainstorm-main-input brainstorm-main-root" data-brainstorm-main="${ideas.length}" value="" placeholder="Add main idea" />
     </div>`;
   }
   return `<div class="node-tool unsupported-tool">Node Type ${escapeHtml(type || "unknown")} not yet supported</div>`;
@@ -1050,6 +1126,129 @@ function bindNodeToolEvents(node) {
       renderProjectPage();
     };
 
+    return;
+  }
+  if (type === "brainstorm") {
+    const ideas = ensureBrainstormState(node);
+    const toolState = getNodeToolState(node);
+    if (!["static", "quality", "unseen"].includes(toolState.brainstormSort)) toolState.brainstormSort = "static";
+    const saveAndRender = async () => {
+      node.status = ideas.some((idea) => (idea.title || "").trim() || (idea.subideas || []).some((sub) => (sub || "").trim())) ? "done" : "new";
+      await persistProjectStructure();
+      renderProjectPage();
+    };
+
+    const mainInputs = document.querySelectorAll("[data-brainstorm-main]");
+    for (const input of mainInputs) {
+      input.oninput = () => {
+        const index = Number(input.dataset.brainstormMain);
+        if (index >= ideas.length) return;
+        ideas[index].title = input.value;
+      };
+      input.onkeydown = async (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const index = Number(input.dataset.brainstormMain);
+        if (index >= ideas.length) {
+          const value = input.value.trim();
+          if (!value) return;
+          ideas.push({ id: uid(), title: value, rating: 0, subideas: [] });
+          await saveAndRender();
+          requestAnimationFrame(() => {
+            const next = document.querySelector(`[data-brainstorm-main=\"${ideas.length}\"]`);
+            if (next) next.focus();
+          });
+          return;
+        }
+        if (!(ideas[index].title || "").trim()) return;
+        if (index === ideas.length - 1) ideas.push({ id: uid(), title: "", rating: 0, subideas: [] });
+        await saveAndRender();
+        requestAnimationFrame(() => {
+          const next = document.querySelector(`[data-brainstorm-main=\"${index + 1}\"]`);
+          if (next) next.focus();
+        });
+      };
+      input.onblur = async () => {
+        const index = Number(input.dataset.brainstormMain);
+        if (index >= ideas.length) return;
+        if ((ideas[index].title || "") === input.value) return;
+        ideas[index].title = input.value;
+        await saveAndRender();
+      };
+    }
+
+    const subideaInputs = document.querySelectorAll("[data-brainstorm-subidea]");
+    for (const input of subideaInputs) {
+      input.oninput = () => {
+        const ideaIndex = Number(input.dataset.brainstormSubidea);
+        const subIndex = Number(input.dataset.brainstormSubideaIndex);
+        const idea = ideas[ideaIndex];
+        if (!idea) return;
+        idea.subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
+        if (subIndex < idea.subideas.length) {
+          idea.subideas[subIndex] = input.value;
+        }
+        input.style.height = "auto";
+        input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+      };
+      input.onfocus = () => {
+        input.style.height = "auto";
+        input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+      };
+      input.onkeydown = async (e) => {
+        if (e.key !== "Enter" || e.shiftKey) return;
+        e.preventDefault();
+        const ideaIndex = Number(input.dataset.brainstormSubidea);
+        const subIndex = Number(input.dataset.brainstormSubideaIndex);
+        const idea = ideas[ideaIndex];
+        if (!idea) return;
+        idea.subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
+        const value = input.value.trim();
+        if (subIndex >= idea.subideas.length) {
+          if (!value) return;
+          idea.subideas.push(value);
+        } else {
+          if (!value) return;
+          idea.subideas[subIndex] = value;
+        }
+        await saveAndRender();
+        requestAnimationFrame(() => {
+          const next = document.querySelector(`[data-brainstorm-subidea=\"${ideaIndex}\"][data-brainstorm-subidea-index=\"${subIndex + 1}\"]`);
+          if (next) next.focus();
+        });
+      };
+      input.onblur = async () => {
+        const ideaIndex = Number(input.dataset.brainstormSubidea);
+        const subIndex = Number(input.dataset.brainstormSubideaIndex);
+        const idea = ideas[ideaIndex];
+        if (!idea) return;
+        idea.subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
+        if (subIndex >= idea.subideas.length) return;
+        if ((idea.subideas[subIndex] || "") === input.value) return;
+        idea.subideas[subIndex] = input.value;
+        await saveAndRender();
+      };
+      input.style.height = "auto";
+      input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+    }
+
+    for (const star of document.querySelectorAll("[data-brainstorm-rate]")) {
+      star.onclick = async () => {
+        const index = Number(star.dataset.brainstormRate);
+        const value = Number(star.dataset.brainstormRateValue) || 0;
+        if (!ideas[index]) return;
+        ideas[index].rating = ideas[index].rating === value ? 0 : value;
+        await saveAndRender();
+      };
+    }
+
+    const sortBtn = document.getElementById("brainstorm-sort-toggle");
+    if (sortBtn) {
+      sortBtn.onclick = () => {
+        toolState.brainstormSort = toolState.brainstormSort === "static" ? "quality" : toolState.brainstormSort === "quality" ? "unseen" : "static";
+        renderProjectPage();
+      };
+    }
     return;
   }
 }
