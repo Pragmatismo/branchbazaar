@@ -15,7 +15,7 @@ const state = {
 };
 
 const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
-const fallbackComponentTypes = ["text", "image", "image set", "video"];
+const fallbackComponentTypes = ["text", "image", "image set", "video", "file"];
 
 const app = document.getElementById("app");
 
@@ -213,6 +213,16 @@ function normalizeNodeSchema(node) {
     node.node_settings.image_set_primary_id = node.image_set_primary_id;
     node.node_settings.image_set_selected_index = node.image_set_selected_index;
   }
+  if (node.sub_type === "file") {
+    node.file_path = node.file_path ?? node.node_settings.file_path ?? "";
+    node.file_name = node.file_name ?? node.node_settings.file_name ?? "";
+    node.file_size = node.file_size ?? node.node_settings.file_size ?? 0;
+    node.file_notes = node.file_notes ?? node.node_settings.file_notes ?? "";
+    node.node_settings.file_path = node.file_path;
+    node.node_settings.file_name = node.file_name;
+    node.node_settings.file_size = node.file_size;
+    node.node_settings.file_notes = node.file_notes;
+  }
   node.children = Array.isArray(node.children) ? node.children : [];
   node.children.forEach(normalizeNodeSchema);
 }
@@ -237,6 +247,20 @@ function formatEditedDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString();
+}
+
+function formatFileSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const rounded = unitIndex === 0 ? Math.round(size) : size.toFixed(size >= 10 ? 1 : 2);
+  return `${rounded} ${units[unitIndex]}`;
 }
 
 function getNodeToolState(node) {
@@ -529,6 +553,26 @@ function renderNodeTool(node) {
       <div class="video-tool-embed-wrap"><div class="video-tool-embed-header"><button class="btn btn-muted" id="video-tool-toggle-embed">${toolState.videoEmbedExpanded ? "−" : "+"}</button><span>${toolState.videoEmbedExpanded ? "Hide" : "Show"} embedded video</span></div><div class="video-tool-player">${embedPanel}</div></div>
       <textarea id="video-tool-notes" rows="3" placeholder="Add notes for this video">${escapeHtml(node.video_notes || "")}</textarea>`
         : `<div class="video-tool-set-row"><input id="video-tool-url" type="url" placeholder="https://example.com/video.mp4" value="${escapeHtml(node.video_url || "")}" /><button class="btn btn-primary" id="video-tool-set">Set</button></div><div class="image-placeholder">Paste a video URL and press Enter or click Set.</div>`}
+    </div>`;
+  }
+  if (type === "file") {
+    const hasFile = !!node.file_path;
+    const fileAssetUrl = hasFile ? `/assets/${encodeURIComponent(state.currentProject.slug)}/${node.file_path}` : "";
+    const filePathLabel = hasFile ? node.file_path : "No file selected";
+    return `<div class="node-tool file-tool">
+      <div class="file-tool-select-row">
+        <button class="btn btn-primary" id="file-tool-upload">Select File</button>
+        <input id="file-tool-input" type="file" class="hidden" />
+      </div>
+      <div class="file-tool-link-row">
+        <span class="file-tool-path">${escapeHtml(filePathLabel)}</span>
+        <a class="btn btn-muted ${hasFile ? "" : "hidden"}" id="file-tool-download" href="${fileAssetUrl}" download="${escapeHtml(node.file_name || "")}">Download</a>
+      </div>
+      <div class="file-tool-info-box ${hasFile ? "" : "file-tool-info-empty"}">
+        <div><strong>Name:</strong> ${escapeHtml(node.file_name || "—")}</div>
+        <div><strong>Size:</strong> ${escapeHtml(formatFileSize(node.file_size || 0))}</div>
+      </div>
+      <textarea id="file-tool-notes" rows="3" placeholder="Notes for selected file" ${hasFile ? "" : "disabled"}>${escapeHtml(node.file_notes || "")}</textarea>
     </div>`;
   }
   return `<div class="node-tool unsupported-tool">Node Type ${escapeHtml(type || "unknown")} not yet supported</div>`;
@@ -950,6 +994,61 @@ function bindNodeToolEvents(node) {
         }
       };
     }
+
+    return;
+  }
+  if (type === "file") {
+    const uploadBtn = document.getElementById("file-tool-upload");
+    const input = document.getElementById("file-tool-input");
+    const notes = document.getElementById("file-tool-notes");
+
+    if (notes) {
+      const commitNotes = async () => {
+        if ((node.file_notes || "") === notes.value) return;
+        node.file_notes = notes.value;
+        await persistProjectStructure();
+      };
+      notes.onblur = async () => {
+        await commitNotes();
+      };
+      notes.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          await commitNotes();
+        }
+      };
+    }
+
+    if (!uploadBtn || !input) return;
+    uploadBtn.onclick = () => input.click();
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("Failed to read file"));
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch("/api/project-node-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: state.currentProject.slug, node_id: node.id, filename: file.name, data_url: dataUrl }),
+      });
+      if (!res.ok) {
+        alert("Unable to upload file.");
+        return;
+      }
+      const payload = await res.json();
+      node.file_path = payload.file_path;
+      node.file_name = payload.file_name || file.name;
+      node.file_size = payload.file_size || file.size || 0;
+      node.status = "done";
+      node.lock_subnodes = true;
+      input.value = "";
+      await persistProjectStructure();
+      renderProjectPage();
+    };
 
     return;
   }
