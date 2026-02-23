@@ -136,8 +136,11 @@ function nextDuplicateName(name, siblingNames) {
 
 function getNodeDisplayType(node) {
   if (!node) return "";
-  if (node.node_type === "component") return node.component_type || "text";
-  return node.node_type || "";
+  if (node.node_type === "component") {
+    const componentType = typeof node.component_type === "string" ? node.component_type.trim().toLowerCase() : "";
+    return componentType || "text";
+  }
+  return typeof node.node_type === "string" ? node.node_type.trim().toLowerCase() : "";
 }
 
 function ensureTextHistory(node) {
