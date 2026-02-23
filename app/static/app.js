@@ -191,6 +191,46 @@ function imageSetDisplayUrl(image) {
   return `/assets/${encodeURIComponent(state.currentProject.slug)}/${image.file_path}`;
 }
 
+function normalizeVideoUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function getVideoEmbedUrl(videoUrl) {
+  if (!videoUrl) return "";
+  try {
+    const parsed = new URL(videoUrl);
+    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    if (host === "youtu.be") {
+      const id = parsed.pathname.split("/").filter(Boolean)[0];
+      return id ? `https://www.youtube.com/embed/${id}` : "";
+    }
+    if (host === "youtube.com") {
+      const id = parsed.searchParams.get("v");
+      if (id) return `https://www.youtube.com/embed/${id}`;
+      if (parsed.pathname.startsWith("/embed/")) return parsed.toString();
+      if (parsed.pathname.startsWith("/shorts/")) {
+        const shortId = parsed.pathname.split("/").filter(Boolean)[1];
+        return shortId ? `https://www.youtube.com/embed/${shortId}` : "";
+      }
+    }
+    if (/(\.mp4|\.webm|\.ogg)(\?|#|$)/i.test(parsed.pathname)) {
+      return parsed.toString();
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
 function updateImageSetStatus(node) {
   const images = ensureImageSetState(node);
   if (!images.length) {
@@ -363,6 +403,30 @@ function renderNodeTool(node) {
         <input id="image-set-file" type="file" accept="image/*" multiple class="hidden" />
       </div>
       <div class="image-set-list">${listHtml || '<div class="image-placeholder">No images to show</div>'}</div>
+    </div>`;
+  }
+  if (type === "video") {
+    const videoUrl = normalizeVideoUrl(node.video_url || "");
+    const hasVideo = !!videoUrl;
+    const toolState = getNodeToolState(node);
+    if (typeof toolState.videoEmbedExpanded !== "boolean") toolState.videoEmbedExpanded = true;
+    const embedUrl = hasVideo ? getVideoEmbedUrl(videoUrl) : "";
+    const canEmbed = !!embedUrl;
+    const embedKey = Number(toolState.videoEmbedKey) || 0;
+    const isDirectVideo = /\.(mp4|webm|ogg)(\?|#|$)/i.test(embedUrl || "");
+    const embedPanel = !canEmbed
+      ? '<div class="image-placeholder">Embedding is not available for this link.</div>'
+      : !toolState.videoEmbedExpanded
+      ? '<div class="image-placeholder">Embedded player is collapsed.</div>'
+      : isDirectVideo
+      ? `<video class="video-tool-embed" controls src="${embedUrl}" data-embed-key="${embedKey}"></video>`
+      : `<iframe class="video-tool-embed" src="${embedUrl}" title="Embedded video" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen data-embed-key="${embedKey}"></iframe>`;
+    return `<div class="node-tool video-tool">
+      ${hasVideo
+        ? `<div class="video-tool-link-row"><a href="${videoUrl}" target="_blank" rel="noopener noreferrer" class="video-tool-link">${escapeHtml(videoUrl)}</a><button class="btn btn-muted" id="video-tool-copy">Copy Link</button></div>
+      <div class="video-tool-embed-wrap"><div class="video-tool-embed-header"><button class="btn btn-muted" id="video-tool-toggle-embed">${toolState.videoEmbedExpanded ? "−" : "+"}</button><span>${toolState.videoEmbedExpanded ? "Hide" : "Show"} embedded video</span></div><div class="video-tool-player">${embedPanel}</div></div>
+      <textarea id="video-tool-notes" rows="3" placeholder="Add notes for this video">${escapeHtml(node.video_notes || "")}</textarea>`
+        : `<div class="video-tool-set-row"><input id="video-tool-url" type="url" placeholder="https://example.com/video.mp4" value="${escapeHtml(node.video_url || "")}" /><button class="btn btn-primary" id="video-tool-set">Set</button></div><div class="image-placeholder">Paste a video URL and press Enter or click Set.</div>`}
     </div>`;
   }
   return `<div class="node-tool unsupported-tool">Node Type ${escapeHtml(type || "unknown")} not yet supported</div>`;
@@ -645,6 +709,75 @@ function bindNodeToolEvents(node) {
       if (node.image_set_type === "choice group") moveToNextVisible(1);
       await saveAndRender();
     };
+
+    return;
+  }
+  if (type === "video") {
+    const urlInput = document.getElementById("video-tool-url");
+    const setBtn = document.getElementById("video-tool-set");
+    const copyBtn = document.getElementById("video-tool-copy");
+    const toggleEmbedBtn = document.getElementById("video-tool-toggle-embed");
+    const notes = document.getElementById("video-tool-notes");
+    const toolState = getNodeToolState(node);
+
+    const setVideo = async () => {
+      if (!urlInput) return;
+      const normalized = normalizeVideoUrl(urlInput.value);
+      if (!normalized) {
+        alert("Please enter a valid http(s) video URL.");
+        return;
+      }
+      if (node.video_url === normalized && node.status === "done") return;
+      node.video_url = normalized;
+      node.status = "done";
+      node.lock_subnodes = true;
+      toolState.videoEmbedExpanded = true;
+      toolState.videoEmbedKey = (Number(toolState.videoEmbedKey) || 0) + 1;
+      await persistProjectStructure();
+      renderProjectPage();
+    };
+
+    if (setBtn) setBtn.onclick = setVideo;
+    if (urlInput) {
+      urlInput.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          await setVideo();
+        }
+      };
+    }
+
+    if (copyBtn) copyBtn.onclick = async () => {
+      if (!node.video_url) return;
+      try {
+        await navigator.clipboard.writeText(node.video_url);
+      } catch {
+        alert("Unable to copy link to clipboard.");
+      }
+    };
+
+    if (toggleEmbedBtn) toggleEmbedBtn.onclick = async () => {
+      toolState.videoEmbedExpanded = !toolState.videoEmbedExpanded;
+      if (toolState.videoEmbedExpanded) toolState.videoEmbedKey = (Number(toolState.videoEmbedKey) || 0) + 1;
+      renderProjectPage();
+    };
+
+    if (notes) {
+      const commitNotes = async () => {
+        if ((node.video_notes || "") === notes.value) return;
+        node.video_notes = notes.value;
+        await persistProjectStructure();
+      };
+      notes.onblur = async () => {
+        await commitNotes();
+      };
+      notes.onkeydown = async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          await commitNotes();
+        }
+      };
+    }
 
     return;
   }
