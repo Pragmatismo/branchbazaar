@@ -341,9 +341,9 @@ input, textarea, select {
 
 .brainstorm-main-col {
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto auto;
   gap: 8px;
-  align-items: center;
+  align-content: start;
 }
 
 .brainstorm-main-input {
@@ -356,18 +356,65 @@ input, textarea, select {
   gap: 8px;
 }
 
+.brainstorm-subidea-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: start;
+}
+
 .brainstorm-subidea-input {
   font-size: 0.95rem;
   min-height: 40px;
+  height: 40px;
   resize: none;
   overflow: hidden;
   line-height: 1.3;
+}
+
+.brainstorm-subidea-flags {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding-top: 6px;
+}
+
+.brainstorm-subidea-flag {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.brainstorm-subidea-flag.on {
+  border-color: #64748b;
+  color: #0f172a;
+}
+
+.brainstorm-subidea-positive {
+  background: #f0fdf4;
+}
+
+.brainstorm-subidea-negative {
+  background: #fef2f2;
+}
+
+.brainstorm-subidea-significant {
+  background: #fefce8;
 }
 
 .brainstorm-rating {
   display: flex;
   gap: 3px;
   flex-wrap: wrap;
+  justify-content: center;
 }
 
 .brainstorm-star {
