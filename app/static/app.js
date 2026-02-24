@@ -257,11 +257,27 @@ function ensureBrainstormState(node) {
       id: idea.id || uid(),
       title: typeof idea.title === "string" ? idea.title : "",
       rating: Number.isInteger(idea.rating) ? Math.max(0, Math.min(10, idea.rating)) : 0,
-      subideas: Array.isArray(idea.subideas) ? idea.subideas.filter((subidea) => typeof subidea === "string") : [],
+      subideas: Array.isArray(idea.subideas)
+        ? idea.subideas
+            .map((subidea) => {
+              if (typeof subidea === "string") return { text: subidea, flag: "none" };
+              if (!subidea || typeof subidea !== "object") return null;
+              const flag = ["positive", "negative", "significant"].includes(subidea.flag) ? subidea.flag : "none";
+              return { text: typeof subidea.text === "string" ? subidea.text : "", flag };
+            })
+            .filter(Boolean)
+        : [],
     }));
   if (!node.node_settings || typeof node.node_settings !== "object") node.node_settings = {};
   node.node_settings.brainstorm_ideas = node.brainstorm_ideas;
   return node.brainstorm_ideas;
+}
+
+function getBrainstormSubideaClass(flag) {
+  if (flag === "positive") return "brainstorm-subidea-positive";
+  if (flag === "negative") return "brainstorm-subidea-negative";
+  if (flag === "significant") return "brainstorm-subidea-significant";
+  return "";
 }
 
 function formatEditedDate(value) {
@@ -628,10 +644,19 @@ function renderNodeTool(node) {
         }).join("");
         const subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
         const subideaInputs = subideas
-          .map(
-            (subidea, subIndex) =>
-              `<textarea class="brainstorm-subidea-input" data-brainstorm-subidea="${index}" data-brainstorm-subidea-index="${subIndex}" rows="1" placeholder="Add note or connected idea">${escapeHtml(subidea || "")}</textarea>`
-          )
+          .map((subidea, subIndex) => {
+            const text = typeof subidea?.text === "string" ? subidea.text : "";
+            const flag = ["positive", "negative", "significant"].includes(subidea?.flag) ? subidea.flag : "none";
+            const flagClass = getBrainstormSubideaClass(flag);
+            return `<div class="brainstorm-subidea-row">
+              <textarea class="brainstorm-subidea-input ${flagClass}" data-brainstorm-subidea="${index}" data-brainstorm-subidea-index="${subIndex}" rows="1" placeholder="Add note or connected idea">${escapeHtml(text)}</textarea>
+              <div class="brainstorm-subidea-flags">
+                <button class="brainstorm-subidea-flag ${flag === "positive" ? "on" : ""}" data-brainstorm-flag="${index}" data-brainstorm-flag-index="${subIndex}" data-brainstorm-flag-value="positive" title="Mark as positive">+</button>
+                <button class="brainstorm-subidea-flag ${flag === "negative" ? "on" : ""}" data-brainstorm-flag="${index}" data-brainstorm-flag-index="${subIndex}" data-brainstorm-flag-value="negative" title="Mark as negative">-</button>
+                <button class="brainstorm-subidea-flag ${flag === "significant" ? "on" : ""}" data-brainstorm-flag="${index}" data-brainstorm-flag-index="${subIndex}" data-brainstorm-flag-value="significant" title="Mark as significant">!</button>
+              </div>
+            </div>`;
+          })
           .join("");
         return `<div class="brainstorm-row" data-brainstorm-row="${index}">
           <div class="brainstorm-main-col">
@@ -640,7 +665,14 @@ function renderNodeTool(node) {
           </div>
           <div class="brainstorm-subideas-col">
             ${subideaInputs}
-            <textarea class="brainstorm-subidea-input" data-brainstorm-subidea="${index}" data-brainstorm-subidea-index="${subideas.length}" rows="1" placeholder="Add note or connected idea"></textarea>
+            <div class="brainstorm-subidea-row">
+              <textarea class="brainstorm-subidea-input" data-brainstorm-subidea="${index}" data-brainstorm-subidea-index="${subideas.length}" rows="1" placeholder="Add note or connected idea"></textarea>
+              <div class="brainstorm-subidea-flags">
+                <button class="brainstorm-subidea-flag" data-brainstorm-flag="${index}" data-brainstorm-flag-index="${subideas.length}" data-brainstorm-flag-value="positive" title="Mark as positive">+</button>
+                <button class="brainstorm-subidea-flag" data-brainstorm-flag="${index}" data-brainstorm-flag-index="${subideas.length}" data-brainstorm-flag-value="negative" title="Mark as negative">-</button>
+                <button class="brainstorm-subidea-flag" data-brainstorm-flag="${index}" data-brainstorm-flag-index="${subideas.length}" data-brainstorm-flag-value="significant" title="Mark as significant">!</button>
+              </div>
+            </div>
           </div>
         </div>`;
       })
@@ -1186,14 +1218,17 @@ function bindNodeToolEvents(node) {
         if (!idea) return;
         idea.subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
         if (subIndex < idea.subideas.length) {
-          idea.subideas[subIndex] = input.value;
+          const existing = idea.subideas[subIndex] && typeof idea.subideas[subIndex] === "object" ? idea.subideas[subIndex] : { text: "", flag: "none" };
+          existing.text = input.value;
+          if (!["positive", "negative", "significant"].includes(existing.flag)) existing.flag = "none";
+          idea.subideas[subIndex] = existing;
         }
         input.style.height = "auto";
-        input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+        input.style.height = input.value.trim() ? `${Math.max(input.scrollHeight, 40)}px` : "40px";
       };
       input.onfocus = () => {
         input.style.height = "auto";
-        input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+        input.style.height = input.value.trim() ? `${Math.max(input.scrollHeight, 40)}px` : "40px";
       };
       input.onkeydown = async (e) => {
         if (e.key !== "Enter" || e.shiftKey) return;
@@ -1206,10 +1241,13 @@ function bindNodeToolEvents(node) {
         const value = input.value.trim();
         if (subIndex >= idea.subideas.length) {
           if (!value) return;
-          idea.subideas.push(value);
+          idea.subideas.push({ text: value, flag: "none" });
         } else {
           if (!value) return;
-          idea.subideas[subIndex] = value;
+          const existing = idea.subideas[subIndex] && typeof idea.subideas[subIndex] === "object" ? idea.subideas[subIndex] : { text: "", flag: "none" };
+          existing.text = value;
+          if (!["positive", "negative", "significant"].includes(existing.flag)) existing.flag = "none";
+          idea.subideas[subIndex] = existing;
         }
         await saveAndRender();
         requestAnimationFrame(() => {
@@ -1224,12 +1262,39 @@ function bindNodeToolEvents(node) {
         if (!idea) return;
         idea.subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
         if (subIndex >= idea.subideas.length) return;
-        if ((idea.subideas[subIndex] || "") === input.value) return;
-        idea.subideas[subIndex] = input.value;
+        const existing = idea.subideas[subIndex] && typeof idea.subideas[subIndex] === "object" ? idea.subideas[subIndex] : { text: "", flag: "none" };
+        if ((existing.text || "") === input.value) return;
+        existing.text = input.value;
+        if (!["positive", "negative", "significant"].includes(existing.flag)) existing.flag = "none";
+        idea.subideas[subIndex] = existing;
         await saveAndRender();
       };
       input.style.height = "auto";
-      input.style.height = `${Math.max(input.scrollHeight, 40)}px`;
+      input.style.height = input.value.trim() ? `${Math.max(input.scrollHeight, 40)}px` : "40px";
+    }
+
+
+    for (const flagBtn of document.querySelectorAll("[data-brainstorm-flag]")) {
+      flagBtn.onclick = async () => {
+        const ideaIndex = Number(flagBtn.dataset.brainstormFlag);
+        const subIndex = Number(flagBtn.dataset.brainstormFlagIndex);
+        const value = flagBtn.dataset.brainstormFlagValue;
+        const idea = ideas[ideaIndex];
+        if (!idea) return;
+        idea.subideas = Array.isArray(idea.subideas) ? idea.subideas : [];
+        if (subIndex >= idea.subideas.length) {
+          const linkedInput = document.querySelector(`[data-brainstorm-subidea="${ideaIndex}"][data-brainstorm-subidea-index="${subIndex}"]`);
+          const text = linkedInput?.value?.trim() || "";
+          if (!text) return;
+          idea.subideas.push({ text, flag: value });
+          await saveAndRender();
+          return;
+        }
+        const existing = idea.subideas[subIndex] && typeof idea.subideas[subIndex] === "object" ? idea.subideas[subIndex] : { text: "", flag: "none" };
+        existing.flag = existing.flag === value ? "none" : value;
+        idea.subideas[subIndex] = existing;
+        await saveAndRender();
+      };
     }
 
     for (const star of document.querySelectorAll("[data-brainstorm-rate]")) {
