@@ -692,6 +692,15 @@ function bindNodeToolEvents(node) {
   if (type === "text") {
     const toolState = getNodeToolState(node);
     const area = document.getElementById("text-tool-content");
+    const commitDraft = async () => {
+      const history = ensureTextHistory(node);
+      const latest = history[history.length - 1];
+      if (toolState.draft === (latest.text || "")) return false;
+      history.push({ edited_at: new Date().toISOString(), text: toolState.draft || "" });
+      toolState.historyIndex = history.length - 1;
+      await persistProjectStructure();
+      return true;
+    };
     const syncTextToolActions = () => {
       const history = ensureTextHistory(node);
       const latest = history[history.length - 1];
@@ -707,15 +716,13 @@ function bindNodeToolEvents(node) {
         toolState.draft = area.value;
         syncTextToolActions();
       };
+      area.onblur = async () => {
+        if (await commitDraft()) renderProjectPage();
+      };
     }
     const saveBtn = document.getElementById("text-tool-save");
     if (saveBtn) saveBtn.onclick = async () => {
-      const history = ensureTextHistory(node);
-      const latest = history[history.length - 1];
-      if (toolState.draft === (latest.text || "")) return;
-      history.push({ edited_at: new Date().toISOString(), text: toolState.draft || "" });
-      toolState.historyIndex = history.length - 1;
-      await persistProjectStructure();
+      if (!(await commitDraft())) return;
       renderProjectPage();
     };
     const revertBtn = document.getElementById("text-tool-revert");
