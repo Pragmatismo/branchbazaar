@@ -16,8 +16,11 @@ const state = {
 
 const suggestedTags = ["urgent", "client", "internal", "research", "creative", "delivery"];
 const fallbackComponentTypes = ["text", "image", "image set", "video", "file", "brainstorm"];
+const TEXT_AUTOSAVE_INTERVAL_MS = 60 * 1000;
 
 const app = document.getElementById("app");
+
+let textAutosaveStarted = false;
 
 function escapeHtml(text) {
   return text
@@ -79,8 +82,10 @@ function uid() {
 
 function ensureProjectUiState() {
   if (!state.projectUi) {
-    state.projectUi = { sidebarWidth: 340, sidebarCollapsed: false, collapsedNodes: {}, selectedNodeId: "", editorOpen: false };
+    state.projectUi = { sidebarWidth: 340, sidebarCollapsed: false, collapsedNodes: {}, selectedNodeId: "", editorOpen: false, textAutosaveDirty: false };
   }
+  if (typeof state.projectUi.textAutosaveDirty !== "boolean") state.projectUi.textAutosaveDirty = false;
+  ensureTextAutosave();
 }
 
 function ensureStructureLoaded() {
@@ -98,7 +103,12 @@ async function loadProjectStructure(slug) {
   if (!state.projectStructures) state.projectStructures = {};
   const nodes = Array.isArray(data.nodes) ? data.nodes : [];
   normalizeStructureNodes(nodes);
+  let recovered = false;
+  for (const node of nodes) {
+    if (recoverTextDraftsOnLoad(node)) recovered = true;
+  }
   state.projectStructures[slug] = { nodes };
+  if (recovered) await persistProjectStructure();
 }
 
 async function persistProjectStructure() {
@@ -201,7 +211,11 @@ function normalizeNodeSchema(node) {
   }
   if (node.sub_type === "text") {
     node.content_history = node.content_history ?? node.node_settings.content_history ?? [];
+    node.current_version = node.current_version ?? node.node_settings.current_version ?? "";
+    node.current_version_time = node.current_version_time ?? node.node_settings.current_version_time ?? "";
     node.node_settings.content_history = node.content_history;
+    node.node_settings.current_version = node.current_version;
+    node.node_settings.current_version_time = node.current_version_time;
   }
   if (node.sub_type === "image set") {
     node.image_set_type = node.image_set_type ?? node.node_settings.image_set_type ?? "collection";
@@ -244,6 +258,56 @@ function ensureTextHistory(node) {
     node.content_history.push({ edited_at: new Date().toISOString(), text: "" });
   }
   return node.content_history;
+}
+
+
+function recoverTextDraftsOnLoad(node) {
+  if (!node || typeof node !== "object") return false;
+  let changed = false;
+  if (getNodeDisplayType(node) === "text") {
+    const history = ensureTextHistory(node);
+    const latest = history[history.length - 1];
+    const currentVersion = typeof node.current_version === "string" ? node.current_version : "";
+    const currentVersionTime = typeof node.current_version_time === "string" ? node.current_version_time : "";
+    if (currentVersion && currentVersion !== (latest.text || "")) {
+      history.push({ edited_at: currentVersionTime || new Date().toISOString(), text: currentVersion });
+      node.current_version = currentVersion;
+      node.current_version_time = currentVersionTime || new Date().toISOString();
+      changed = true;
+    } else {
+      node.current_version = latest.text || "";
+      node.current_version_time = latest.edited_at || new Date().toISOString();
+      if (currentVersion !== node.current_version || currentVersionTime !== node.current_version_time) changed = true;
+    }
+    node.node_settings.current_version = node.current_version;
+    node.node_settings.current_version_time = node.current_version_time;
+  }
+  for (const child of node.children || []) {
+    if (recoverTextDraftsOnLoad(child)) changed = true;
+  }
+  return changed;
+}
+
+async function flushTextAutosave(force = false) {
+  if (!state.currentProject || !state.projectUi) return;
+  if (!force && !state.projectUi.textAutosaveDirty) return;
+  state.projectUi.textAutosaveDirty = false;
+  try {
+    await persistProjectStructure();
+  } catch {
+    state.projectUi.textAutosaveDirty = true;
+  }
+}
+
+function ensureTextAutosave() {
+  if (textAutosaveStarted) return;
+  textAutosaveStarted = true;
+  window.setInterval(() => {
+    flushTextAutosave();
+  }, TEXT_AUTOSAVE_INTERVAL_MS);
+  window.addEventListener("blur", () => {
+    flushTextAutosave();
+  });
 }
 
 function ensureBrainstormState(node) {
@@ -698,9 +762,15 @@ function bindNodeToolEvents(node) {
       if (!atLatest) return false;
       const latest = history[history.length - 1];
       if (toolState.draft === (latest.text || "")) return false;
-      history.push({ edited_at: new Date().toISOString(), text: toolState.draft || "" });
+      const editedAt = new Date().toISOString();
+      history.push({ edited_at: editedAt, text: toolState.draft || "" });
+      node.current_version = toolState.draft || "";
+      node.current_version_time = editedAt;
+      node.node_settings.current_version = node.current_version;
+      node.node_settings.current_version_time = node.current_version_time;
       toolState.historyIndex = history.length - 1;
-      await persistProjectStructure();
+      state.projectUi.textAutosaveDirty = true;
+      await flushTextAutosave(true);
       return true;
     };
     const syncTextToolActions = () => {
@@ -716,6 +786,12 @@ function bindNodeToolEvents(node) {
     if (area) {
       area.oninput = () => {
         toolState.draft = area.value;
+        const editedAt = new Date().toISOString();
+        node.current_version = toolState.draft;
+        node.current_version_time = editedAt;
+        node.node_settings.current_version = node.current_version;
+        node.node_settings.current_version_time = node.current_version_time;
+        state.projectUi.textAutosaveDirty = true;
         syncTextToolActions();
       };
       area.onblur = async () => {
@@ -724,7 +800,10 @@ function bindNodeToolEvents(node) {
     }
     const saveBtn = document.getElementById("text-tool-save");
     if (saveBtn) saveBtn.onclick = async () => {
-      if (!(await commitDraft())) return;
+      if (!(await commitDraft())) {
+        await flushTextAutosave(true);
+        return;
+      }
       renderProjectPage();
     };
     const revertBtn = document.getElementById("text-tool-revert");
@@ -1537,15 +1616,19 @@ function renderProjectPage() {
   };
 
   for (const rowEl of document.querySelectorAll("[data-select-node]")) {
-    rowEl.onclick = (e) => {
+    rowEl.onclick = async (e) => {
       if (e.target.closest("[data-toggle-node]")) return;
+      await flushTextAutosave(true);
       state.projectUi.selectedNodeId = rowEl.dataset.selectNode;
       const nextNode = rows.find((row) => row.node.id === state.projectUi.selectedNodeId)?.node;
       if (nextNode && getNodeDisplayType(nextNode) === "text") {
         const toolState = getNodeToolState(nextNode);
         const history = ensureTextHistory(nextNode);
+        const latest = history[history.length - 1];
         if (typeof toolState.historyIndex !== "number") toolState.historyIndex = history.length - 1;
-        if (typeof toolState.draft !== "string") toolState.draft = history[history.length - 1].text || "";
+        if (typeof toolState.draft !== "string") {
+          toolState.draft = typeof nextNode.current_version === "string" ? nextNode.current_version : latest.text || "";
+        }
       }
       renderProjectPage();
     };
