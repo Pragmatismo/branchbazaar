@@ -694,6 +694,8 @@ function bindNodeToolEvents(node) {
     const area = document.getElementById("text-tool-content");
     const commitDraft = async () => {
       const history = ensureTextHistory(node);
+      const atLatest = (toolState.historyIndex ?? history.length - 1) === history.length - 1;
+      if (!atLatest) return false;
       const latest = history[history.length - 1];
       if (toolState.draft === (latest.text || "")) return false;
       history.push({ edited_at: new Date().toISOString(), text: toolState.draft || "" });
@@ -734,16 +736,25 @@ function bindNodeToolEvents(node) {
       renderProjectPage();
     };
     const prevBtn = document.getElementById("text-tool-prev");
-    if (prevBtn) prevBtn.onclick = () => {
+    if (prevBtn) prevBtn.onclick = async () => {
       const history = ensureTextHistory(node);
-      toolState.historyIndex = Math.max(0, (toolState.historyIndex ?? history.length - 1) - 1);
+      const wasAtLatest = (toolState.historyIndex ?? history.length - 1) === history.length - 1;
+      if (wasAtLatest) await commitDraft();
+      const nextHistory = ensureTextHistory(node);
+      toolState.historyIndex = Math.max(0, (toolState.historyIndex ?? nextHistory.length - 1) - 1);
+      if (toolState.historyIndex === nextHistory.length - 1) {
+        toolState.draft = nextHistory[nextHistory.length - 1].text || "";
+      }
       renderProjectPage();
     };
     const nextBtn = document.getElementById("text-tool-next");
-    if (nextBtn) nextBtn.onclick = () => {
+    if (nextBtn) nextBtn.onclick = async () => {
       const history = ensureTextHistory(node);
-      toolState.historyIndex = Math.min(history.length - 1, (toolState.historyIndex ?? history.length - 1) + 1);
-      if (toolState.historyIndex === history.length - 1) toolState.draft = history[history.length - 1].text || "";
+      const wasAtLatest = (toolState.historyIndex ?? history.length - 1) === history.length - 1;
+      if (wasAtLatest) await commitDraft();
+      const nextHistory = ensureTextHistory(node);
+      toolState.historyIndex = Math.min(nextHistory.length - 1, (toolState.historyIndex ?? nextHistory.length - 1) + 1);
+      if (toolState.historyIndex === nextHistory.length - 1) toolState.draft = nextHistory[nextHistory.length - 1].text || "";
       renderProjectPage();
     };
     syncTextToolActions();
